@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"sync/atomic"
 
 	"github.com/caarlos0/env/v11"
@@ -758,6 +759,30 @@ func (c *Config) GetAPIBase() string {
 		return c.Providers.VLLM.APIBase
 	}
 	return ""
+}
+
+// GetProviderConfig returns the ProviderConfig for the given provider name.
+// Used to fall back to main provider credentials when embedding-specific ones
+// are not set.
+func (p ProvidersConfig) GetProviderConfig(name string) ProviderConfig {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "openai":
+		return p.OpenAI.ProviderConfig
+	case "ollama":
+		return p.Ollama
+	case "nvidia":
+		return p.Nvidia
+	case "zhipu":
+		return p.Zhipu
+	case "vllm":
+		return p.VLLM
+	case "groq":
+		return p.Groq
+	case "deepseek":
+		return p.DeepSeek
+	default:
+		return ProviderConfig{}
+	}
 }
 
 func expandHome(path string) string {
