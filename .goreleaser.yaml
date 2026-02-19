@@ -13,8 +13,11 @@ builds:
   - id: picoclaw
     env:
       - CGO_ENABLED=0
+    mod: vendor
     tags:
       - stdjson
+    # vendor-patch removes upsidedown protobuf import that defeats DCE.
+    # bleve is included by default; use -tags no_bleve to exclude.
     ldflags:
       - -s -w
       - -X github.com/sipeed/picoclaw/cmd/picoclaw/internal.version={{ .Version }}

@@ -79,11 +79,19 @@ generate:
 	@$(GO) generate ./...
 	@echo "Run generate complete"
 
+## vendor-patch: Vendor dependencies and apply bleve DCE patch (see pkg/rag/bleve-no-upsidedown.patch)
+vendor-patch:
+	@$(GO) mod vendor
+	@cd vendor/github.com/blevesearch/bleve/v2 && \
+		sed -i.bak 's|"github.com/blevesearch/bleve/v2/index/upsidedown"||' index.go index_impl.go index_meta.go && \
+		sed -i.bak 's|upsidedown\.Name|"upside_down"|g' index.go index_impl.go index_meta.go && \
+		rm -f index.go.bak index_impl.go.bak index_meta.go.bak
+
 ## build: Build the picoclaw binary for current platform
-build: generate
+build: generate vendor-patch
 	@echo "Building $(BINARY_NAME) for $(PLATFORM)/$(ARCH)..."
 	@mkdir -p $(BUILD_DIR)
-	@$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_PATH) ./$(CMD_DIR)
+	@$(GO) build -mod=vendor $(GOFLAGS) -tags $(TAGS) $(LDFLAGS) -o $(BINARY_PATH) ./$(CMD_DIR)
 	@echo "Build complete: $(BINARY_PATH)"
 	@ln -sf $(BINARY_NAME)-$(PLATFORM)-$(ARCH) $(BUILD_DIR)/$(BINARY_NAME)
 
@@ -122,7 +130,7 @@ build-pi-zero: build-linux-arm build-linux-arm64
 	@echo "Pi Zero 2 W builds: $(BUILD_DIR)/$(BINARY_NAME)-linux-arm (32-bit), $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 (64-bit)"
 
 ## build-all: Build picoclaw for all platforms
-build-all: generate
+build-all: generate vendor-patch
 	@echo "Building for multiple platforms..."
 	@mkdir -p $(BUILD_DIR)
 	GOOS=linux GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./$(CMD_DIR)
@@ -165,6 +173,7 @@ uninstall-all:
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
+	@rm -rf vendor
 	@echo "Clean complete"
 
 ## vet: Run go vet for static analysis
