@@ -1,6 +1,6 @@
 # pkg/rag
 
-ResearchRAG MVP engine for PicoClaw.
+ResearchRAG engine for PicoClaw.
 
 ## 1. Scope and status
 
@@ -9,10 +9,10 @@ ResearchRAG MVP engine for PicoClaw.
 - CLI: `picoclaw rag index|search|chunk|eval`
 - Tool: `rag_search`
 
-This package implements a **stable MVP API** with a **pluggable index provider**:
+This package implements a **stable API** with a **pluggable index provider**:
 
-- `simple` (default): JSON-backed local index
-- `bleve` (optional build tag): embedded Bleve index
+- `simple` (default): JSON-backed local index with token-count scoring
+- `comet`: pure-Go hybrid search — BM25 lexical + cosine vector similarity via [comet](https://github.com/wizenheimer/comet)
 
 ## 2. Package layout
 
@@ -21,9 +21,12 @@ This package implements a **stable MVP API** with a **pluggable index provider**
 - `chunker.go`: markdown chunk splitting and text normalization
 - `provider.go`: pluggable provider contracts + factory
 - `provider_simple.go`: JSON-backed provider
-- `provider_bleve.go`: Bleve provider (build tag `bleve`)
+- `provider_comet.go`: Comet provider (BM25 + vector hybrid)
+- `embedder.go`: embedding interface + HTTP provider (OpenAI-compatible)
 - `service.go`: indexing, search orchestration, queueing, eval, masking, filtering
 - `service_test.go`: smoke tests for index/search/filter behavior
+- `provider_comet_test.go`: comet provider unit tests (BM25, hybrid, persistence)
+- `embedder_bow_test.go`: deterministic bag-of-words test embedder
 
 Related integration:
 
@@ -35,13 +38,13 @@ Related integration:
 Service constructor:
 
 ```go
-svc := rag.NewService(workspace, cfg.Tools.RAG)
+svc := rag.NewService(workspace, cfg.Tools.RAG, cfg.Providers)
 ```
 
 Provider selection:
 
 - `cfg.Tools.RAG.IndexProvider = "simple"` (default)
-- `cfg.Tools.RAG.IndexProvider = "bleve"` (requires `-tags bleve`)
+- `cfg.Tools.RAG.IndexProvider = "comet"` (pure Go, no build tags needed)
 
 Provider contract:
 
@@ -94,8 +97,8 @@ Queue helpers:
 
 Configured by `tools.rag.index_provider`:
 
-- `simple` (default)
-- `bleve` (requires compile with `-tags bleve`)
+- `simple` (default) — JSON-backed, token-count scoring, zero dependencies
+- `comet` — pure-Go BM25 + optional vector hybrid via cosine similarity
 
 Provider contract (`IndexProvider`):
 
@@ -108,7 +111,7 @@ Provider contract (`IndexProvider`):
 On-disk artifacts:
 
 - simple: `workspace/.rag/state/index.json`
-- bleve: `workspace/.rag/state/bleve/` + `workspace/.rag/state/index_info.json`
+- comet: `workspace/.rag/state/index.json` + `workspace/.rag/state/vectors.json` (when embeddings enabled)
 
 `IndexInfo.index_provider` is persisted and returned in `EvidencePackFull`.
 
@@ -207,13 +210,20 @@ Text normalization (`normalizeText`):
 ### Current lexical scoring
 
 - `simple` provider: token containment/count heuristic (`lexicalScore`)
-- `bleve` provider: embedded Bleve scoring over indexed fields
+- `comet` provider: BM25 scoring via `BM25SearchIndex`, optionally fused with cosine vector similarity using reciprocal rank fusion
 
 `simple` scoring details:
 
 - tokenize query by non-alnum Unicode split
 - count occurrences per token in lowercase chunk text
 - sum token counts
+
+`comet` scoring details:
+
+- BM25 lexical scoring for text queries
+- when embeddings are available: `HybridSearchIndex` fuses BM25 + cosine vector scores via reciprocal rank fusion
+- when embeddings are unavailable: falls back to BM25-only via `BM25SearchIndex`
+- `ModeKeywordOnly` forces BM25-only path even when vectors exist
 
 `Service` keeps profile weighting, filtering, risk penalty, and deterministic ordering backend-agnostic.
 
@@ -256,14 +266,34 @@ Defined in `profiles.go`.
   - weights: bm25 0.90, metadata 0.10
   - cap: 5 chunks/source
 
-## 10. Semantic mode behavior
+## 10. Semantic / vector search
 
-Current status:
+The `comet` provider supports hybrid (BM25 + vector) search when an embedder is configured.
 
-- semantic API shape exists
-- semantic provider execution is not yet wired in MVP internals
+### Enabling embeddings
 
-When mode requires semantic but unavailable:
+Set `allow_external_embeddings: true` in RAG config and configure an embedding provider:
+
+```json
+{
+  "tools": {
+    "rag": {
+      "index_provider": "comet",
+      "allow_external_embeddings": true
+    }
+  }
+}
+```
+
+The embedder uses the configured LLM provider's embedding endpoint (OpenAI-compatible API). Embeddings are computed during `BuildIndex` and persisted to `vectors.json` alongside the chunk index.
+
+### Search modes
+
+- **hybrid** (default): fuses BM25 text scores with cosine vector similarity via reciprocal rank fusion
+- **keyword-only**: BM25 only, skips vector search even if embeddings exist
+- **semantic-only**: vector similarity only (falls back to keyword-only if embeddings unavailable)
+
+When mode requires semantic but embeddings are unavailable:
 
 - fallback to `keyword-only`
 - warning note added: `semantic unavailable; fallback=keyword-only`
@@ -382,172 +412,64 @@ Typical operational issues:
 - denylist too broad -> many skipped files
 - stale references after source file moves (known MVP behavior)
 
-## 17. Performance characteristics (MVP)
+## 17. Performance characteristics
 
 Current complexity (approx):
 
-- Build index: `O(total_input_bytes)`
-- Search: `O(total_chunks)` scan with filtering and sort
+- Build index: `O(total_input_bytes)` + embedding API calls (batched, 64 chunks/batch)
+- Search (simple): `O(total_chunks)` scan with filtering and sort
+- Search (comet BM25): `O(total_chunks)` BM25 scoring
+- Search (comet hybrid): BM25 + flat vector scan, fused via reciprocal rank fusion
 
-This is acceptable for small/medium local KB and designed to be replaced by Bleve indexing/query execution for scale.
+The comet provider keeps indexes in memory and rebuilds from JSON on load. This is suitable for picoclaw's target: personal knowledge bases that fit comfortably in a few MB of RAM.
 
-## 18. Bleve build
+## 18. Comet provider
 
-Bleve provider is optional to keep default builds dependency-light.
+The `comet` provider uses [github.com/wizenheimer/comet](https://github.com/wizenheimer/comet) v0.1.1, a pure-Go library for hybrid search. No CGO, no build tags, no external dependencies.
 
-Enable Bleve build:
+### Architecture
 
-```bash
-go build -tags bleve ./cmd/picoclaw
-```
+- **BM25**: `comet.BM25SearchIndex` for lexical scoring
+- **Vectors**: `comet.FlatIndex` with cosine distance for dense vector search
+- **Hybrid**: `comet.HybridSearchIndex` fuses both via reciprocal rank fusion
 
-Install dependency before Bleve build:
+### Persistence
 
-```bash
-go get github.com/blevesearch/bleve/v2@latest
-```
+Comet indexes are in-memory. State is persisted as JSON:
 
-Set config:
+- `index.json`: chunk metadata + index info (same format as `simple` provider)
+- `vectors.json`: float32 embedding vectors (only when embeddings enabled)
+
+On startup, indexes are rebuilt from the persisted JSON. This is appropriate for picoclaw's target dataset sizes (typical KB fits in a few MB of RAM).
+
+### Config
 
 ```json
 {
   "tools": {
     "rag": {
-      "index_provider": "bleve"
+      "index_provider": "comet"
     }
   }
 }
 ```
 
-## 19. Bleve binary bloat: protobuf × reflect.Type DCE defeat
+No special build flags or external dependencies required.
 
-### The problem
+## 19. Embedding providers
 
-Building with `-tags bleve` inflates the binary by ~40 MB (e.g. 25 MB → 71 MB on
-linux/amd64). The extra weight is **not** bleve's search code — it's the Go
-linker's dead-code elimination (DCE) being defeated by a subtle interaction
-between two unrelated dependencies.
+Embeddings are handled by the `Embedder` interface in `embedder.go`. The default implementation (`httpEmbedder`) calls any OpenAI-compatible `/v1/embeddings` endpoint.
 
-### How to detect it
+Supported providers (auto-detected from LLM provider config):
 
-```bash
-# count "ReflectMethod" entries in the linker dependency graph
-GOOS=linux GOARCH=amd64 \
-  go build -tags bleve -ldflags='-dumpdep' -o /dev/null ./cmd/picoclaw/ \
-  2>&1 | grep -c ReflectMethod
-```
+- OpenAI
+- Anthropic (via proxy)
+- OpenRouter
+- Gemini
+- Zhipu
+- Any OpenAI-compatible endpoint
 
-- **0** → DCE is healthy, binary is lean.
-- **≥1** → the linker is keeping every exported method of every reachable type.
-  Expect +30–40 MB of dead code in the binary.
-
-### Root cause chain
-
-The bloat requires **two** ingredients that individually are harmless:
-
-1. **`bleve/v2` imports `index/upsidedown`** — the upsidedown package
-   contains `upsidedown.pb.go` (protoc-generated). Its `init()` calls
-   `protoimpl.TypeBuilder{}.Build()`, which internally calls
-   `reflect.Type.Method(int)` on message descriptor types. The Go compiler
-   tags this call site with `R_USEIFACEMETHOD type:reflect.Type+112`
-   (offset 112 = the `Method(int) reflect.Method` entry in the
-   `reflect.Type` interface).
-
-2. **`openai-go` (or any package) embeds `reflect.Type` in a struct stored
-   as `any`** — e.g. `type decoderEntry struct { reflect.Type }`. The
-   promoted `Method(int)` wrapper on `decoderEntry` is tagged
-   `REFLECTMETHOD` + `UsedInIface` by the compiler.
-   Upstream issue: https://github.com/openai/openai-go/issues/609
-
-When **both** are present the linker's `deadcode` pass (see
-`cmd/link/internal/ld/deadcode.go`) matches the `ifaceMethod{Method, …}`
-entry from (1) against the promoted wrapper from (2). This sets
-`reflectSeen = true`, which forces the linker to mark **all** exported
-methods of **all** reachable types as live — defeating DCE globally and
-pulling in ~40 MB of otherwise-dead code (protobuf registries, gRPC stubs,
-encoding tables, etc.).
-
-Neither dependency triggers this alone. It is an emergent interaction:
-
-```
-upsidedown.pb.go init()
-  → protoimpl.TypeBuilder.Build()
-    → reflect.Type.Method(int)            ← emits R_USEIFACEMETHOD
-                                              for Method(int)
-
-openai-go shared.decoderEntry
-  → struct { reflect.Type } stored as any ← promoted Method(int) tagged
-                                              REFLECTMETHOD + UsedInIface
-
-linker deadcode pass:
-  ifaceMethod set ∋ {Method, …}
-  + decoderEntry.Method is REFLECTMETHOD
-  → reflectSeen = true
-  → keep ALL exported methods of ALL reachable types
-  → +40 MB
-```
-
-### Why upsidedown is imported even though we use scorch
-
-`provider_bleve.go` creates indexes with `bleve.NewUsing(..., "scorch", ...)`,
-never upsidedown. However, bleve's top-level package unconditionally imports
-`index/upsidedown` in three files (`index.go`, `index_impl.go`,
-`index_meta.go`) just to reference the constant `upsidedown.Name`
-(`"upside_down"`). This single constant drags in the entire upsidedown
-package, including its `.pb.go` and protobuf runtime.
-
-### Fix
-
-The `make build-bleve` target vendors dependencies, patches the 3 bleve
-files in-place, and builds with `-mod=vendor`:
-
-```bash
-make build-bleve
-```
-
-The Makefile `vendor-patch` target runs `go mod vendor`, then uses `perl -pi`
-to remove the upsidedown import and replace `upsidedown.Name` with the string
-literal `"upside_down"` in 3 files:
-
-| File            | Change                                                     |
-| --------------- | ---------------------------------------------------------- |
-| `index.go`      | remove import, replace `upsidedown.Name` → `"upside_down"` |
-| `index_impl.go` | same                                                       |
-| `index_meta.go` | same                                                       |
-
-The upsidedown **store** subpackages (`store/boltdb`, `store/gtreap`) are
-left untouched — they do not import the core upsidedown package and carry
-no protobuf code. `vendor/` is gitignored and created on the fly.
-
-The reference patch is stored in `pkg/rag/bleve-no-upsidedown.patch`.
-
-Result:
-
-| Build             | Binary size | ReflectMethod count |
-| ----------------- | ----------- | ------------------- |
-| no bleve tag      | 25 MB       | 0                   |
-| bleve (unpatched) | 71 MB       | 12                  |
-| bleve (patched)   | 31 MB       | 0                   |
-
-### General detection for other projects
-
-Any Go binary can hit this if it combines:
-
-1. A dependency that calls `reflect.Type.Method(int)` or
-   `reflect.Type.MethodByName(string)` at package init time (common in
-   protobuf-generated code).
-2. A dependency that embeds `reflect.Type` in a struct stored as an
-   interface (uncommon but exists in some decoder/codec libraries).
-
-To check your own binary:
-
-```bash
-go build -ldflags='-dumpdep' -o /dev/null ./... 2>&1 | grep -c ReflectMethod
-```
-
-If the count is >0, use `-ldflags='-v=2 -dumpdep'` and search for
-`reached iface method:` and `markable method:` lines to identify the
-matching pair, then trace which import pulls in the proto/reflect code.
+Embeddings are opt-in: set `allow_external_embeddings: true` in RAG config. When disabled, the comet provider operates in BM25-only mode.
 
 ## 20. Testing
 
@@ -556,6 +478,20 @@ Package tests:
 - `service_test.go`
   - build + search smoke
   - restricted filtering default
+  - unknown provider error
+
+- `provider_comet_test.go`
+  - BM25-only search (no embedder)
+  - hybrid search (BOW embedder)
+  - persistence across provider instances
+  - chunk fetch by source path + ordinal
+  - keyword-only mode override
+
+- `eval_test.go`
+  - recall, ranking, filter, tag, per-source cap, score breakdown, LLM format
+
+- `embedder_bow_test.go`
+  - deterministic bag-of-words embedder for testing vector paths without API keys
 
 Integration-adjacent test:
 
