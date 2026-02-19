@@ -33,7 +33,7 @@ We discussed caching strategy and invalidation policy for api responses.
 	}
 
 	rcfg := config.DefaultConfig().Tools.RAG
-	svc := NewService(workspace, rcfg)
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
 	info, err := svc.BuildIndex(context.Background())
 	if err != nil {
 		t.Fatalf("BuildIndex failed: %v", err)
@@ -81,7 +81,7 @@ confidential incident details.
 	}
 
 	rcfg := config.DefaultConfig().Tools.RAG
-	svc := NewService(workspace, rcfg)
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
 	if _, err := svc.BuildIndex(context.Background()); err != nil {
 		t.Fatalf("BuildIndex failed: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestBuildIndexFailsForUnknownProvider(t *testing.T) {
 	rcfg := config.DefaultConfig().Tools.RAG
 	rcfg.IndexProvider = "unknown-provider"
 
-	svc := NewService(workspace, rcfg)
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
 	_, err := svc.BuildIndex(context.Background())
 	if err == nil {
 		t.Fatalf("expected provider initialization error")

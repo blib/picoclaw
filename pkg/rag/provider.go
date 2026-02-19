@@ -45,7 +45,7 @@ type IndexProvider interface {
 	LoadIndexInfo(ctx context.Context) (*IndexInfo, error)
 }
 
-func newIndexProvider(workspace string, cfg config.RAGToolsConfig, indexRoot string) (IndexProvider, error) {
+func newIndexProvider(workspace string, cfg config.RAGToolsConfig, indexRoot string, embedder Embedder) (IndexProvider, error) {
 	id := strings.ToLower(strings.TrimSpace(cfg.IndexProvider))
 	if id == "" {
 		id = "simple"
@@ -54,8 +54,8 @@ func newIndexProvider(workspace string, cfg config.RAGToolsConfig, indexRoot str
 	switch id {
 	case "simple", "json":
 		return newSimpleProvider(indexRoot), nil
-	case "bleve":
-		return newBleveProvider(workspace, cfg, indexRoot)
+	case "comet":
+		return newCometProvider(indexRoot, embedder), nil
 	default:
 		return nil, fmt.Errorf("unsupported rag index_provider: %s", cfg.IndexProvider)
 	}

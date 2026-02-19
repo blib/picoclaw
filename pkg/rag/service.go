@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
-	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 var (
@@ -82,13 +81,13 @@ func NewService(workspace string, cfg config.RAGToolsConfig, providers config.Pr
 
 	indexRoot := resolveRAGPath(workspace, cfg.IndexRoot)
 	kbRoot := resolveRAGPath(workspace, cfg.KBRoot)
-	provider, providerErr := newIndexProvider(workspace, cfg, indexRoot)
 	apiKey := cfg.EmbeddingAPIKey
 	if apiKey == "" {
 		apiKey = providers.GetProviderConfig(cfg.EmbeddingProvider).APIKey
 	}
 	embedder := newEmbedder(cfg.EmbeddingProvider, cfg.EmbeddingModelID,
 		cfg.EmbeddingAPIBase, apiKey, cfg.AllowExternalEmbeddings)
+	provider, providerErr := newIndexProvider(workspace, cfg, indexRoot, embedder)
 
 	svc := &Service{
 		workspace:       workspace,
@@ -282,53 +281,7 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 		return nil, err
 	}
 
-	// Embed chunks and persist vectors when an embedder is configured.
-	if s.embedder != nil && len(indexedChunks) > 0 {
-		if err := s.embedAndStore(ctx, indexedChunks); err != nil {
-			warnings = append(warnings, fmt.Sprintf("embedding_failed: %v", err))
-			info.Warnings = warnings
-			logger.Warn(fmt.Sprintf("embedding failed, keyword-only search: %v", err))
-		}
-	}
-
 	return &info, nil
-}
-
-// chunkVectorID returns a stable key for storing/retrieving chunk vectors.
-func chunkVectorID(sourcePath string, ordinal int) string {
-	return fmt.Sprintf("%s#%d", sourcePath, ordinal)
-}
-
-// embedAndStore embeds all indexed chunks via the configured embedder and
-// persists the vectors to a JSON sidecar. Batches in groups of 64 to stay
-// within typical API limits.
-func (s *Service) embedAndStore(ctx context.Context, chunks []IndexedChunk) error {
-	const batchSize = 64
-
-	vs := newVectorStore(s.indexRoot)
-
-	for start := 0; start < len(chunks); start += batchSize {
-		end := start + batchSize
-		if end > len(chunks) {
-			end = len(chunks)
-		}
-
-		texts := make([]string, end-start)
-		for i, c := range chunks[start:end] {
-			texts[i] = c.Text
-		}
-
-		vecs, err := s.embedder.Embed(ctx, texts)
-		if err != nil {
-			return fmt.Errorf("embed batch %d-%d: %w", start, end, err)
-		}
-
-		for i, c := range chunks[start:end] {
-			vs.Set(chunkVectorID(c.SourcePath, c.ChunkOrdinal), vecs[i])
-		}
-	}
-
-	return vs.Save()
 }
 
 func (s *Service) beginQueued(ctx context.Context) error {
