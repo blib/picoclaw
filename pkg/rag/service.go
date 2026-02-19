@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -17,7 +16,7 @@ import (
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
-	"gopkg.in/yaml.v3"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 var (
@@ -33,6 +32,7 @@ type Service struct {
 	indexRoot string
 	kbRoot    string
 	provider  IndexProvider
+	embedder  Embedder
 
 	providerInitErr error
 	sem             chan struct{}
@@ -40,9 +40,18 @@ type Service struct {
 	q               int
 }
 
+// ServiceOption configures optional Service dependencies.
+type ServiceOption func(*Service)
+
+// WithEmbedder overrides the embedder created from config. Useful for testing
+// with a fake embedder that doesn't require API keys.
+func WithEmbedder(e Embedder) ServiceOption {
+	return func(s *Service) { s.embedder = e }
+}
+
 // NewService centralizes runtime defaults so every entry point (CLI and tool)
 // gets identical behavior and reproducible scoring without duplicated wiring.
-func NewService(workspace string, cfg config.RAGToolsConfig) *Service {
+func NewService(workspace string, cfg config.RAGToolsConfig, providers config.ProvidersConfig, opts ...ServiceOption) *Service {
 	if cfg.QueueSize <= 0 {
 		cfg.QueueSize = 16
 	}
@@ -74,16 +83,27 @@ func NewService(workspace string, cfg config.RAGToolsConfig) *Service {
 	indexRoot := resolveRAGPath(workspace, cfg.IndexRoot)
 	kbRoot := resolveRAGPath(workspace, cfg.KBRoot)
 	provider, providerErr := newIndexProvider(workspace, cfg, indexRoot)
+	apiKey := cfg.EmbeddingAPIKey
+	if apiKey == "" {
+		apiKey = providers.GetProviderConfig(cfg.EmbeddingProvider).APIKey
+	}
+	embedder := newEmbedder(cfg.EmbeddingProvider, cfg.EmbeddingModelID,
+		cfg.EmbeddingAPIBase, apiKey, cfg.AllowExternalEmbeddings)
 
-	return &Service{
+	svc := &Service{
 		workspace:       workspace,
 		cfg:             cfg,
 		indexRoot:       indexRoot,
 		kbRoot:          kbRoot,
 		provider:        provider,
+		embedder:        embedder,
 		providerInitErr: providerErr,
 		sem:             make(chan struct{}, cfg.Concurrency),
 	}
+	for _, opt := range opts {
+		opt(svc)
+	}
+	return svc
 }
 
 func resolveRAGPath(workspace, value string) string {
@@ -261,7 +281,54 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 	if err := provider.Build(ctx, indexedChunks, info); err != nil {
 		return nil, err
 	}
+
+	// Embed chunks and persist vectors when an embedder is configured.
+	if s.embedder != nil && len(indexedChunks) > 0 {
+		if err := s.embedAndStore(ctx, indexedChunks); err != nil {
+			warnings = append(warnings, fmt.Sprintf("embedding_failed: %v", err))
+			info.Warnings = warnings
+			logger.Warn(fmt.Sprintf("embedding failed, keyword-only search: %v", err))
+		}
+	}
+
 	return &info, nil
+}
+
+// chunkVectorID returns a stable key for storing/retrieving chunk vectors.
+func chunkVectorID(sourcePath string, ordinal int) string {
+	return fmt.Sprintf("%s#%d", sourcePath, ordinal)
+}
+
+// embedAndStore embeds all indexed chunks via the configured embedder and
+// persists the vectors to a JSON sidecar. Batches in groups of 64 to stay
+// within typical API limits.
+func (s *Service) embedAndStore(ctx context.Context, chunks []IndexedChunk) error {
+	const batchSize = 64
+
+	vs := newVectorStore(s.indexRoot)
+
+	for start := 0; start < len(chunks); start += batchSize {
+		end := start + batchSize
+		if end > len(chunks) {
+			end = len(chunks)
+		}
+
+		texts := make([]string, end-start)
+		for i, c := range chunks[start:end] {
+			texts[i] = c.Text
+		}
+
+		vecs, err := s.embedder.Embed(ctx, texts)
+		if err != nil {
+			return fmt.Errorf("embed batch %d-%d: %w", start, end, err)
+		}
+
+		for i, c := range chunks[start:end] {
+			vs.Set(chunkVectorID(c.SourcePath, c.ChunkOrdinal), vecs[i])
+		}
+	}
+
+	return vs.Save()
 }
 
 func (s *Service) beginQueued(ctx context.Context) error {
@@ -607,114 +674,6 @@ func (s *Service) FetchChunk(ctx context.Context, sourcePath string, chunkOrdina
 		Text:         chunk.Text,
 		Snippet:      chunk.Snippet,
 	}, nil
-}
-
-// Eval executes golden-set checks and returns a process exit code so CI can
-// gate profile/index changes on measurable retrieval quality.
-func (s *Service) Eval(ctx context.Context, goldenPath, baselinePath, profileID string) (*EvalReport, int, error) {
-	provider, err := s.providerOrErr()
-	if err != nil {
-		return nil, 1, err
-	}
-
-	info, err := provider.LoadIndexInfo(ctx)
-	if err != nil {
-		return nil, 1, err
-	}
-
-	cases, err := loadEvalCases(goldenPath)
-	if err != nil {
-		return nil, 2, err
-	}
-	if len(cases) == 0 {
-		return nil, 2, fmt.Errorf("empty golden set")
-	}
-
-	validCases := 0
-	recallSum := 0.0
-	for _, tc := range cases {
-		if strings.TrimSpace(tc.Query) == "" {
-			continue
-		}
-		res, err := s.Search(ctx, SearchRequest{
-			Query:     tc.Query,
-			ProfileID: profileID,
-			TopK:      10,
-		})
-		if err != nil {
-			return nil, 1, err
-		}
-		if len(tc.MustIncludeSourcePaths) == 0 {
-			continue
-		}
-		validCases++
-		must := make(map[string]struct{})
-		for _, p := range tc.MustIncludeSourcePaths {
-			must[p] = struct{}{}
-		}
-		hit := 0
-		seen := map[string]struct{}{}
-		for _, item := range res.Full.Items {
-			if _, ok := must[item.SourcePath]; ok {
-				if _, dup := seen[item.SourcePath]; !dup {
-					hit++
-					seen[item.SourcePath] = struct{}{}
-				}
-			}
-		}
-		recallSum += float64(hit) / float64(len(must))
-	}
-
-	recall := 1.0
-	if validCases > 0 {
-		recall = recallSum / float64(validCases)
-	}
-
-	report := &EvalReport{
-		RunID:       fmt.Sprintf("eval-%d", time.Now().UTC().Unix()),
-		Timestamp:   time.Now().UTC().Format(time.RFC3339),
-		IndexInfo:   *info,
-		ProfileID:   profileID,
-		Metrics:     EvalMetrics{RecallAtK: recall},
-		Degradation: false,
-	}
-	exitCode := 0
-
-	if baselinePath != "" {
-		baselineBytes, err := os.ReadFile(baselinePath)
-		if err != nil {
-			return nil, 2, fmt.Errorf("failed to read baseline: %w", err)
-		}
-		var baseline EvalReport
-		if err := json.Unmarshal(baselineBytes, &baseline); err != nil {
-			return nil, 2, fmt.Errorf("invalid baseline report: %w", err)
-		}
-		if recall < baseline.Metrics.RecallAtK {
-			report.Degradation = true
-			report.DegradationReasons = append(report.DegradationReasons, fmt.Sprintf("recall@k dropped from %.4f to %.4f", baseline.Metrics.RecallAtK, recall))
-			exitCode = 3
-		}
-	}
-
-	return report, exitCode, nil
-}
-
-func loadEvalCases(path string) ([]EvalCase, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	cases := make([]EvalCase, 0)
-	if strings.HasSuffix(strings.ToLower(path), ".json") {
-		if err := json.Unmarshal(data, &cases); err != nil {
-			return nil, err
-		}
-		return cases, nil
-	}
-	if err := yaml.Unmarshal(data, &cases); err != nil {
-		return nil, err
-	}
-	return cases, nil
 }
 
 func validateFilters(filters SearchFilters) error {

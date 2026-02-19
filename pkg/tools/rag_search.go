@@ -16,11 +16,11 @@ type RAGSearchTool struct {
 
 // NewRAGSearchTool returns nil when disabled so deployments can keep one binary
 // while enforcing explicit opt-in for local RAG access.
-func NewRAGSearchTool(workspace string, cfg config.RAGToolsConfig) *RAGSearchTool {
+func NewRAGSearchTool(workspace string, cfg config.RAGToolsConfig, providers config.ProvidersConfig) *RAGSearchTool {
 	if !cfg.Enabled {
 		return nil
 	}
-	return &RAGSearchTool{service: rag.NewService(workspace, cfg)}
+	return &RAGSearchTool{service: rag.NewService(workspace, cfg, providers)}
 }
 
 // Name keeps a stable tool identifier required by prompts and registry wiring.
