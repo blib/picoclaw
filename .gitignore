@@ -2,6 +2,7 @@
 # Go build artifacts
 bin/
 build/
+vendor/
 *.exe
 *.dll
 *.so

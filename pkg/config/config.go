@@ -232,10 +232,29 @@ type ExecConfig struct {
 	CustomDenyPatterns []string `json:"custom_deny_patterns" env:"PICOCLAW_TOOLS_EXEC_CUSTOM_DENY_PATTERNS"`
 }
 
+type RAGToolsConfig struct {
+	Enabled                 bool     `json:"enabled" env:"PICOCLAW_TOOLS_RAG_ENABLED"`
+	IndexProvider           string   `json:"index_provider" env:"PICOCLAW_TOOLS_RAG_INDEX_PROVIDER"`
+	IndexRoot               string   `json:"index_root" env:"PICOCLAW_TOOLS_RAG_INDEX_ROOT"`
+	KBRoot                  string   `json:"kb_root" env:"PICOCLAW_TOOLS_RAG_KB_ROOT"`
+	AllowExternalEmbeddings bool     `json:"allow_external_embeddings" env:"PICOCLAW_TOOLS_RAG_ALLOW_EXTERNAL_EMBEDDINGS"`
+	EmbeddingProvider       string   `json:"embedding_provider" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_PROVIDER"`
+	EmbeddingModelID        string   `json:"embedding_model_id" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL_ID"`
+	QueueSize               int      `json:"queue_size" env:"PICOCLAW_TOOLS_RAG_QUEUE_SIZE"`
+	Concurrency             int      `json:"concurrency" env:"PICOCLAW_TOOLS_RAG_CONCURRENCY"`
+	ChunkSoftBytes          int      `json:"chunk_soft_bytes" env:"PICOCLAW_TOOLS_RAG_CHUNK_SOFT_BYTES"`
+	ChunkHardBytes          int      `json:"chunk_hard_bytes" env:"PICOCLAW_TOOLS_RAG_CHUNK_HARD_BYTES"`
+	DocumentHardBytes       int      `json:"document_hard_bytes" env:"PICOCLAW_TOOLS_RAG_DOCUMENT_HARD_BYTES"`
+	MaxChunksPerDocument    int      `json:"max_chunks_per_document" env:"PICOCLAW_TOOLS_RAG_MAX_CHUNKS_PER_DOCUMENT"`
+	DenylistPaths           []string `json:"denylist_paths"`
+	DefaultProfileID        string   `json:"default_profile_id" env:"PICOCLAW_TOOLS_RAG_DEFAULT_PROFILE_ID"`
+}
+
 type ToolsConfig struct {
 	Web  WebToolsConfig  `json:"web"`
 	Cron CronToolsConfig `json:"cron"`
 	Exec ExecConfig      `json:"exec"`
+	RAG  RAGToolsConfig  `json:"rag"`
 }
 
 func DefaultConfig() *Config {
@@ -355,6 +374,23 @@ func DefaultConfig() *Config {
 			},
 			Exec: ExecConfig{
 				EnableDenyPatterns: true,
+			},
+			RAG: RAGToolsConfig{
+				Enabled:                 true,
+				IndexProvider:           "simple",
+				IndexRoot:               "workspace/.rag",
+				KBRoot:                  "workspace/kb",
+				AllowExternalEmbeddings: false,
+				EmbeddingProvider:       "openai",
+				EmbeddingModelID:        "text-embedding-3-small",
+				QueueSize:               16,
+				Concurrency:             3,
+				ChunkSoftBytes:          4096,
+				ChunkHardBytes:          8192,
+				DocumentHardBytes:       10 * 1024 * 1024,
+				MaxChunksPerDocument:    2000,
+				DenylistPaths:           []string{".env", "secrets/", "private_keys/"},
+				DefaultProfileID:        "default_research",
 			},
 		},
 		Heartbeat: HeartbeatConfig{

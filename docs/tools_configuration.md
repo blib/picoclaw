@@ -10,7 +10,8 @@ PicoClaw's tools configuration is located in the `tools` field of `config.json`.
     "web": { ... },
     "exec": { ... },
     "approval": { ... },
-    "cron": { ... }
+    "cron": { ... },
+    "rag": { ... }
   }
 }
 ```
@@ -120,3 +121,29 @@ For example:
 - `PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
 
 Note: Array-type environment variables are not currently supported and must be set via the config file.
+
+## RAG Tool
+
+ResearchRAG is a local retrieval layer over files in `workspace/kb`.
+
+| Config | Type | Default | Description |
+|--------|------|---------|-------------|
+| `enabled` | bool | true | Enable ResearchRAG |
+| `index_provider` | string | `simple` | Retrieval backend (`simple` or `bleve`) |
+| `index_root` | string | `workspace/.rag` | Index storage root |
+| `kb_root` | string | `workspace/kb` | Knowledge base root |
+| `allow_external_embeddings` | bool | false | Allow semantic mode with external embeddings |
+| `embedding_provider` | string | `openai` | Embedding provider id |
+| `embedding_model_id` | string | `text-embedding-3-small` | Embedding model id |
+| `queue_size` | int | 16 | Maximum queued search requests |
+| `concurrency` | int | 3 | Concurrent search workers |
+| `chunk_soft_bytes` | int | 4096 | Preferred chunk size |
+| `chunk_hard_bytes` | int | 8192 | Hard chunk limit |
+| `document_hard_bytes` | int | 10485760 | Maximum source document size |
+| `max_chunks_per_document` | int | 2000 | Chunk cap per document |
+| `denylist_paths` | array | [`.env`,`secrets/`,`private_keys/`] | Blocked paths during ingest |
+| `default_profile_id` | string | `default_research` | Fixed profile used when omitted |
+
+Notes:
+- `index_provider=simple` works in default build.
+- `index_provider=bleve` requires building PicoClaw with `-tags bleve`.

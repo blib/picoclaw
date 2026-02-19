@@ -15,7 +15,8 @@ LDFLAGS=-ldflags "-X main.version=$(VERSION) -X main.gitCommit=$(GIT_COMMIT) -X 
 
 # Go variables
 GO?=go
-GOFLAGS?=-v -tags stdjson
+TAGS?=stdjson
+GOFLAGS?=-v
 
 # Installation
 INSTALL_PREFIX?=$(HOME)/.local
@@ -72,24 +73,32 @@ generate:
 	@$(GO) generate ./...
 	@echo "Run generate complete"
 
+## vendor-patch: Vendor dependencies and apply bleve DCE patch (see pkg/rag/bleve-no-upsidedown.patch)
+vendor-patch:
+	@$(GO) mod vendor
+	@cd vendor/github.com/blevesearch/bleve/v2 && \
+		sed -i.bak 's|"github.com/blevesearch/bleve/v2/index/upsidedown"||' index.go index_impl.go index_meta.go && \
+		sed -i.bak 's|upsidedown\.Name|"upside_down"|g' index.go index_impl.go index_meta.go && \
+		rm -f index.go.bak index_impl.go.bak index_meta.go.bak
+
 ## build: Build the picoclaw binary for current platform
-build: generate
+build: generate vendor-patch
 	@echo "Building $(BINARY_NAME) for $(PLATFORM)/$(ARCH)..."
 	@mkdir -p $(BUILD_DIR)
-	@$(GO) build $(GOFLAGS) $(LDFLAGS) -o $(BINARY_PATH) ./$(CMD_DIR)
+	@$(GO) build -mod=vendor $(GOFLAGS) -tags $(TAGS) $(LDFLAGS) -o $(BINARY_PATH) ./$(CMD_DIR)
 	@echo "Build complete: $(BINARY_PATH)"
 	@ln -sf $(BINARY_NAME)-$(PLATFORM)-$(ARCH) $(BUILD_DIR)/$(BINARY_NAME)
 
 ## build-all: Build picoclaw for all platforms
-build-all: generate
+build-all: generate vendor-patch
 	@echo "Building for multiple platforms..."
 	@mkdir -p $(BUILD_DIR)
-	GOOS=linux GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=loong64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-loong64 ./$(CMD_DIR)
-	GOOS=linux GOARCH=riscv64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-riscv64 ./$(CMD_DIR)
-	GOOS=darwin GOARCH=arm64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
-	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
+	GOOS=linux GOARCH=amd64 $(GO) build -mod=vendor -tags $(TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-amd64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=arm64 $(GO) build -mod=vendor -tags $(TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-arm64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=loong64 $(GO) build -mod=vendor -tags $(TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-loong64 ./$(CMD_DIR)
+	GOOS=linux GOARCH=riscv64 $(GO) build -mod=vendor -tags $(TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-linux-riscv64 ./$(CMD_DIR)
+	GOOS=darwin GOARCH=arm64 $(GO) build -mod=vendor -tags $(TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-darwin-arm64 ./$(CMD_DIR)
+	GOOS=windows GOARCH=amd64 $(GO) build -mod=vendor -tags $(TAGS) $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
 	@echo "All builds complete"
 
 ## install: Install picoclaw to system and copy builtin skills
@@ -120,6 +129,7 @@ uninstall-all:
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
+	@rm -rf vendor
 	@echo "Clean complete"
 
 ## vet: Run go vet for static analysis

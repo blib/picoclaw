@@ -131,6 +131,27 @@
     },
     "cron": {
       "exec_timeout_minutes": 5
+    },
+    "rag": {
+      "enabled": true,
+      "index_provider": "simple",
+      "index_root": "workspace/.rag",
+      "kb_root": "workspace/kb",
+      "allow_external_embeddings": false,
+      "embedding_provider": "openai",
+      "embedding_model_id": "text-embedding-3-small",
+      "queue_size": 16,
+      "concurrency": 3,
+      "chunk_soft_bytes": 4096,
+      "chunk_hard_bytes": 8192,
+      "document_hard_bytes": 10485760,
+      "max_chunks_per_document": 2000,
+      "denylist_paths": [
+        ".env",
+        "secrets/",
+        "private_keys/"
+      ],
+      "default_profile_id": "default_research"
     }
   },
   "heartbeat": {

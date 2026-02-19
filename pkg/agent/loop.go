@@ -87,6 +87,10 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 	}
 	registry.Register(tools.NewWebFetchTool(50000))
 
+	if ragTool := tools.NewRAGSearchTool(workspace, cfg.Tools.RAG); ragTool != nil {
+		registry.Register(ragTool)
+	}
+
 	// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
 	registry.Register(tools.NewI2CTool())
 	registry.Register(tools.NewSPITool())
