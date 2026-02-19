@@ -26,7 +26,7 @@ func ragCmd() {
 		os.Exit(1)
 	}
 
-	svc := rag.NewService(cfg.WorkspacePath(), cfg.Tools.RAG)
+	svc := rag.NewService(cfg.WorkspacePath(), cfg.Tools.RAG, cfg.Providers)
 	sub := os.Args[2]
 	args := os.Args[3:]
 
@@ -37,8 +37,7 @@ func ragCmd() {
 		ragSearchCmd(svc, args)
 	case "chunk":
 		ragChunkCmd(svc, args)
-	case "eval":
-		ragEvalCmd(svc, args)
+
 	default:
 		fmt.Printf("Unknown rag command: %s\n", sub)
 		ragHelp()
@@ -55,13 +54,12 @@ func ragHelp() {
 	fmt.Println("  index        Build/update local RAG index")
 	fmt.Println("  search       Query indexed knowledge base")
 	fmt.Println("  chunk        Fetch chunk text by source path + ordinal")
-	fmt.Println("  eval         Evaluate retrieval with golden set")
 	fmt.Println()
 	fmt.Println("Examples:")
 	fmt.Println("  picoclaw rag index --full")
 	fmt.Println("  picoclaw rag search --query \"where did we discuss caching\" --json")
 	fmt.Println("  picoclaw rag chunk --source-path kb/notes/2026-02-18-meeting.md --chunk-ordinal 3")
-	fmt.Println("  picoclaw rag eval --golden kb/golden.yml --baseline workspace/.rag/reports/last.json")
+
 }
 
 func ragIndexCmd(svc *rag.Service, args []string) {
@@ -219,63 +217,4 @@ func ragChunkCmd(svc *rag.Service, args []string) {
 	fmt.Printf("%s#%d\n", chunk.SourcePath, chunk.ChunkOrdinal)
 	fmt.Printf("Heading: %s\n", chunk.ChunkLoc.HeadingPath)
 	fmt.Printf("Text:\n%s\n", chunk.Text)
-}
-
-func ragEvalCmd(svc *rag.Service, args []string) {
-	golden := ""
-	baseline := ""
-	profile := ""
-	jsonOut := false
-
-	for i := 0; i < len(args); i++ {
-		switch args[i] {
-		case "--golden":
-			if i+1 < len(args) {
-				golden = args[i+1]
-				i++
-			}
-		case "--baseline":
-			if i+1 < len(args) {
-				baseline = args[i+1]
-				i++
-			}
-		case "--profile":
-			if i+1 < len(args) {
-				profile = args[i+1]
-				i++
-			}
-		case "--json":
-			jsonOut = true
-		}
-	}
-
-	if golden == "" {
-		fmt.Println("Error: --golden is required")
-		os.Exit(2)
-	}
-
-	report, code, err := svc.Eval(context.Background(), golden, baseline, profile)
-	if err != nil {
-		fmt.Printf("Eval error: %v\n", err)
-		os.Exit(code)
-	}
-
-	if jsonOut {
-		b, _ := json.MarshalIndent(report, "", "  ")
-		fmt.Println(string(b))
-	} else {
-		fmt.Printf("Eval run: %s\n", report.RunID)
-		fmt.Printf("Profile: %s\n", report.ProfileID)
-		fmt.Printf("Recall@k: %.4f\n", report.Metrics.RecallAtK)
-		if report.Degradation {
-			fmt.Println("Degradation: true")
-			for _, r := range report.DegradationReasons {
-				fmt.Printf("- %s\n", r)
-			}
-		} else {
-			fmt.Println("Degradation: false")
-		}
-	}
-
-	os.Exit(code)
 }

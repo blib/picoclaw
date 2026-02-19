@@ -87,7 +87,7 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 	}
 	registry.Register(tools.NewWebFetchTool(50000))
 
-	if ragTool := tools.NewRAGSearchTool(workspace, cfg.Tools.RAG); ragTool != nil {
+	if ragTool := tools.NewRAGSearchTool(workspace, cfg.Tools.RAG, cfg.Providers); ragTool != nil {
 		registry.Register(ragTool)
 	}
 

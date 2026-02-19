@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/caarlos0/env/v11"
@@ -239,7 +240,9 @@ type RAGToolsConfig struct {
 	KBRoot                  string   `json:"kb_root" env:"PICOCLAW_TOOLS_RAG_KB_ROOT"`
 	AllowExternalEmbeddings bool     `json:"allow_external_embeddings" env:"PICOCLAW_TOOLS_RAG_ALLOW_EXTERNAL_EMBEDDINGS"`
 	EmbeddingProvider       string   `json:"embedding_provider" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_PROVIDER"`
-	EmbeddingModelID        string   `json:"embedding_model_id" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL_ID"`
+	EmbeddingModelID        string   `json:"embedding_model" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL_ID"`
+	EmbeddingAPIBase        string   `json:"api_base" env:"PICOCLAW_TOOLS_RAG_API_BASE"`
+	EmbeddingAPIKey         string   `json:"api_key" env:"PICOCLAW_TOOLS_RAG_API_KEY"`
 	QueueSize               int      `json:"queue_size" env:"PICOCLAW_TOOLS_RAG_QUEUE_SIZE"`
 	Concurrency             int      `json:"concurrency" env:"PICOCLAW_TOOLS_RAG_CONCURRENCY"`
 	ChunkSoftBytes          int      `json:"chunk_soft_bytes" env:"PICOCLAW_TOOLS_RAG_CHUNK_SOFT_BYTES"`
@@ -495,6 +498,30 @@ func (c *Config) GetAPIBase() string {
 		return c.Providers.VLLM.APIBase
 	}
 	return ""
+}
+
+// GetProviderConfig returns the ProviderConfig for the given provider name.
+// Used to fall back to main provider credentials when embedding-specific ones
+// are not set.
+func (p ProvidersConfig) GetProviderConfig(name string) ProviderConfig {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "openai":
+		return p.OpenAI.ProviderConfig
+	case "ollama":
+		return p.Ollama
+	case "nvidia":
+		return p.Nvidia
+	case "zhipu":
+		return p.Zhipu
+	case "vllm":
+		return p.VLLM
+	case "groq":
+		return p.Groq
+	case "deepseek":
+		return p.DeepSeek
+	default:
+		return ProviderConfig{}
+	}
 }
 
 func expandHome(path string) string {
