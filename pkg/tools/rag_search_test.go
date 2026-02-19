@@ -32,7 +32,7 @@ Bleve based retrieval and chunk indexing discussion.
 	}
 
 	rcfg := config.DefaultConfig().Tools.RAG
-	tool := NewRAGSearchTool(workspace, rcfg)
+	tool := NewRAGSearchTool(workspace, rcfg, config.ProvidersConfig{})
 	if tool == nil {
 		t.Fatal("expected non-nil rag tool")
 	}
