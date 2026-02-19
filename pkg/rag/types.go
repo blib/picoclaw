@@ -142,30 +142,6 @@ type ChunkResult struct {
 	Snippet      string   `json:"snippet"`
 }
 
-type EvalCase struct {
-	Query                  string     `json:"query" yaml:"query"`
-	MustIncludeSourcePaths []string   `json:"must_include_source_paths" yaml:"must_include_source_paths"`
-	AcceptableSourcePaths  []string   `json:"acceptable_source_paths" yaml:"acceptable_source_paths"`
-	MustIncludeChunkRefs   []ChunkRef `json:"must_include_chunk_refs" yaml:"must_include_chunk_refs"`
-	ForbiddenClaims        []string   `json:"forbidden_claims" yaml:"forbidden_claims"`
-}
-
-type EvalMetrics struct {
-	RecallAtK            float64 `json:"recall_at_k"`
-	PrecisionAtK         float64 `json:"precision_at_k,omitempty"`
-	UnsupportedClaimRate float64 `json:"unsupported_claim_rate,omitempty"`
-}
-
-type EvalReport struct {
-	RunID              string      `json:"run_id"`
-	Timestamp          string      `json:"timestamp"`
-	IndexInfo          IndexInfo   `json:"index_info"`
-	ProfileID          string      `json:"profile_id"`
-	Metrics            EvalMetrics `json:"metrics"`
-	Degradation        bool        `json:"degradation"`
-	DegradationReasons []string    `json:"degradation_reasons,omitempty"`
-}
-
 type docMeta struct {
 	Title           string
 	Date            string
