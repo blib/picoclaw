@@ -37,6 +37,10 @@ type Service struct {
 	sem             chan struct{}
 	mu              sync.Mutex
 	q               int
+
+	// precomputed from cfg.DenylistPaths at construction
+	denyExact    map[string]struct{} // lowered exact filenames
+	denyPrefixes []string            // lowered directory prefixes (end with /)
 }
 
 // ServiceOption configures optional Service dependencies.
@@ -46,6 +50,18 @@ type ServiceOption func(*Service)
 // with a fake embedder that doesn't require API keys.
 func WithEmbedder(e Embedder) ServiceOption {
 	return func(s *Service) { s.embedder = e }
+}
+
+// Close releases resources held by the service and its provider.
+// Safe to call on a partially-constructed service (providerInitErr set).
+func (s *Service) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.provider != nil {
+		return s.provider.Close()
+	}
+	return nil
 }
 
 // NewService centralizes runtime defaults so every entry point (CLI and tool)
@@ -81,7 +97,7 @@ func NewService(workspace string, cfg config.RAGToolsConfig, providers config.Pr
 
 	indexRoot := resolveRAGPath(workspace, cfg.IndexRoot)
 	kbRoot := resolveRAGPath(workspace, cfg.KBRoot)
-	apiKey := cfg.EmbeddingAPIKey
+	apiKey := cfg.EmbeddingAPIKey.Value()
 	if apiKey == "" {
 		apiKey = providers.GetProviderConfig(cfg.EmbeddingProvider).APIKey
 	}
@@ -99,6 +115,7 @@ func NewService(workspace string, cfg config.RAGToolsConfig, providers config.Pr
 		providerInitErr: providerErr,
 		sem:             make(chan struct{}, cfg.Concurrency),
 	}
+	svc.precomputeDenylist(cfg.DenylistPaths)
 	for _, opt := range opts {
 		opt(svc)
 	}
@@ -148,11 +165,42 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 		return nil, err
 	}
 
+	// Chunking is stateless IO — no concurrency slot needed.
+	chunks, info, err := s.buildChunksAndInfo(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	// Only the provider mutation needs the semaphore slot.
+	if err := s.acquireSem(ctx); err != nil {
+		return nil, fmt.Errorf("build: %w", err)
+	}
+	defer s.releaseSem()
+
+	if err := provider.Build(ctx, chunks, *info); err != nil {
+		return nil, err
+	}
+
+	return info, nil
+}
+
+// buildChunksAndInfo walks kbRoot and produces chunks + metadata without
+// touching the provider. Used by both BuildIndex (full build) and the
+// watcher (in-memory rebuild).
+func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *IndexInfo, error) {
+	provider, err := s.providerOrErr()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	indexedChunks := make([]IndexedChunk, 0, 512)
 	warnings := make([]string, 0)
 	docCount := 0
 
-	absWorkspace, _ := filepath.Abs(s.workspace)
+	absWorkspace, err := filepath.Abs(s.workspace)
+	if err != nil {
+		return nil, nil, fmt.Errorf("resolve workspace path: %w", err)
+	}
 	if resolvedWorkspace, err := filepath.EvalSymlinks(absWorkspace); err == nil {
 		absWorkspace = resolvedWorkspace
 	}
@@ -197,7 +245,7 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 			return nil
 		}
 		relToKB = filepath.ToSlash(relToKB)
-		if isDenied(relToKB, s.cfg.DenylistPaths) {
+		if isDenied(relToKB, s.denyExact, s.denyPrefixes) {
 			warnings = append(warnings, fmt.Sprintf("security_path_blocked:%s", relToKB))
 			return nil
 		}
@@ -215,9 +263,6 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 		meta, body, parseWarnings := parseFrontmatter(string(data))
 		for _, w := range parseWarnings {
 			warnings = append(warnings, fmt.Sprintf("%s:%s", relToKB, w))
-		}
-		if meta.ID == "" {
-			warnings = append(warnings, fmt.Sprintf("missing_frontmatter_id:%s", relToKB))
 		}
 		if meta.Confidentiality == "" {
 			meta.Confidentiality = "internal"
@@ -261,7 +306,7 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	now := time.Now().UTC()
@@ -277,11 +322,26 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 		TotalChunks:      len(indexedChunks),
 	}
 
-	if err := provider.Build(ctx, indexedChunks, info); err != nil {
-		return nil, err
-	}
+	return indexedChunks, &info, nil
+}
 
-	return &info, nil
+// acquireSem blocks until a concurrency slot is available or ctx is cancelled.
+// Use for heavyweight operations (build, reindex) that should respect the
+// concurrency limit but are not counted against the search queue depth.
+func (s *Service) acquireSem(ctx context.Context) error {
+	select {
+	case s.sem <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releaseSem() {
+	select {
+	case <-s.sem:
+	default:
+	}
 }
 
 func (s *Service) beginQueued(ctx context.Context) error {
@@ -385,10 +445,18 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		return nil, err
 	}
 
+	// Pin freshness to index build time so scores are stable and
+	// reproducible within an index version.
+	refTime := time.Now().UTC()
+	if bt, ok := parseISODate(searchRes.IndexInfo.BuiltAt); ok {
+		refTime = bt
+	}
+
 	type cand struct {
 		Chunk     IndexedChunk
 		RawBM25   float64
 		RawCosine float64
+		RawFused  float64
 		FreshNorm float64
 		MetaBoost float64
 		Score     float64
@@ -401,15 +469,16 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		if !passesFilters(chunk, req.Filters) {
 			continue
 		}
-		if hit.LexicalScore <= 0 && hit.SemanticScore <= 0 {
+		if hit.LexicalScore <= 0 && hit.SemanticScore <= 0 && hit.FusedScore <= 0 {
 			continue
 		}
-		fresh := freshnessNorm(chunk.Date)
+		fresh := freshnessNorm(chunk.Date, refTime)
 		boost := metadataBoost(profile, chunk)
 		cands = append(cands, cand{
 			Chunk:     chunk,
 			RawBM25:   hit.LexicalScore,
 			RawCosine: hit.SemanticScore,
+			RawFused:  hit.FusedScore,
 			FreshNorm: fresh,
 			MetaBoost: boost,
 		})
@@ -428,14 +497,24 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		return &SearchResult{Full: empty, LLM: compact}, nil
 	}
 
+	// Determine whether candidates carry pre-fused scores (e.g. RRF from
+	// hybrid provider) or separate lexical/semantic components.
+	hasFused := len(cands) > 0 && cands[0].RawFused > 0
+
 	sort.SliceStable(cands, func(i, j int) bool {
-		if cands[i].RawBM25 == cands[j].RawBM25 {
+		primary := func(c cand) float64 {
+			if hasFused {
+				return c.RawFused
+			}
+			return c.RawBM25
+		}
+		if primary(cands[i]) == primary(cands[j]) {
 			if cands[i].Chunk.SourcePath == cands[j].Chunk.SourcePath {
 				return cands[i].Chunk.ChunkOrdinal < cands[j].Chunk.ChunkOrdinal
 			}
 			return cands[i].Chunk.SourcePath < cands[j].Chunk.SourcePath
 		}
-		return cands[i].RawBM25 > cands[j].RawBM25
+		return primary(cands[i]) > primary(cands[j])
 	})
 
 	topN := profile.BM25TopN
@@ -446,6 +525,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 
 	minBM, maxBM := cands[0].RawBM25, cands[0].RawBM25
 	minCos, maxCos := cands[0].RawCosine, cands[0].RawCosine
+	minFused, maxFused := cands[0].RawFused, cands[0].RawFused
 	for _, c := range cands {
 		if c.RawBM25 < minBM {
 			minBM = c.RawBM25
@@ -459,27 +539,47 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		if c.RawCosine > maxCos {
 			maxCos = c.RawCosine
 		}
+		if c.RawFused < minFused {
+			minFused = c.RawFused
+		}
+		if c.RawFused > maxFused {
+			maxFused = c.RawFused
+		}
 	}
 
 	for i := range cands {
-		bmNorm := 1.0
-		if maxBM > minBM {
-			bmNorm = (cands[i].RawBM25 - minBM) / (maxBM - minBM)
-		}
+		var bmNorm, cosNorm float64
 
-		cosNorm := 0.0
-		if semanticAvailable && mode != ModeKeywordOnly {
-			cosNorm = 1.0
-			if maxCos > minCos {
-				cosNorm = (cands[i].RawCosine - minCos) / (maxCos - minCos)
+		if hasFused {
+			// Provider already fused lexical+semantic (e.g. RRF). Use
+			// the fused score as the combined retrieval signal, spreading
+			// it across BM25+Cosine weights so profile math still applies.
+			fusedNorm := 1.0
+			if maxFused > minFused {
+				fusedNorm = (cands[i].RawFused - minFused) / (maxFused - minFused)
 			}
-		}
+			bmNorm = fusedNorm
+			cosNorm = fusedNorm
+		} else {
+			bmNorm = 1.0
+			if maxBM > minBM {
+				bmNorm = (cands[i].RawBM25 - minBM) / (maxBM - minBM)
+			}
 
-		if mode == ModeSemanticOnly {
-			bmNorm = 0.0
-		}
-		if mode == ModeKeywordOnly {
 			cosNorm = 0.0
+			if semanticAvailable && mode != ModeKeywordOnly {
+				cosNorm = 1.0
+				if maxCos > minCos {
+					cosNorm = (cands[i].RawCosine - minCos) / (maxCos - minCos)
+				}
+			}
+
+			if mode == ModeSemanticOnly {
+				bmNorm = 0.0
+			}
+			if mode == ModeKeywordOnly {
+				cosNorm = 0.0
+			}
 		}
 
 		final := profile.WeightBM25*bmNorm + profile.WeightCosine*cosNorm + profile.WeightFreshness*cands[i].FreshNorm + profile.WeightMetadataBoost*cands[i].MetaBoost
@@ -760,12 +860,14 @@ func lexicalScore(queryTokens []string, text string) float64 {
 	return score
 }
 
-func freshnessNorm(date string) float64 {
+// freshnessNorm computes an exponential decay score relative to refTime so
+// scores are stable and reproducible within an index version.
+func freshnessNorm(date string, refTime time.Time) float64 {
 	t, ok := parseISODate(date)
 	if !ok {
 		return 0
 	}
-	ageDays := time.Since(t).Hours() / 24
+	ageDays := refTime.Sub(t).Hours() / 24
 	if ageDays < 0 {
 		ageDays = 0
 	}
@@ -834,7 +936,11 @@ func parseFrontmatter(content string) (docMeta, string, []string) {
 		}
 		key := strings.ToLower(strings.TrimSpace(parts[0]))
 		value := strings.TrimSpace(parts[1])
-		value = strings.Trim(value, `"'`)
+		// Strip outer quotes but preserve inner colons.
+		if (strings.HasPrefix(value, `"`) && strings.HasSuffix(value, `"`)) ||
+			(strings.HasPrefix(value, `'`) && strings.HasSuffix(value, `'`)) {
+			value = value[1 : len(value)-1]
+		}
 		switch key {
 		case "title":
 			meta.Title = value
@@ -848,8 +954,6 @@ func parseFrontmatter(content string) (docMeta, string, []string) {
 			meta.Source = value
 		case "confidentiality":
 			meta.Confidentiality = strings.ToLower(value)
-		case "id":
-			meta.ID = value
 		case "tags":
 			if value == "" {
 				inTags = true
@@ -913,46 +1017,71 @@ func safeSnippet(text string, max int) string {
 		max = 600
 	}
 	masked := maskSecrets(text)
-	if len(masked) <= max {
+	runes := []rune(masked)
+	if len(runes) <= max {
 		return masked
 	}
-	return masked[:max] + "..."
+	return string(runes[:max]) + "..."
+}
+
+// secretPatterns is compiled once at package init. maskSecrets runs per-chunk
+// during indexing and per-snippet during search, so avoiding repeated compilation
+// matters (~14k calls on a 2000-chunk build).
+var secretPatterns = []struct {
+	re *regexp.Regexp
+	rp string
+}{
+	{regexp.MustCompile(`(?i)sk-[a-z0-9]{20,}`), "[REDACTED_API_KEY]"},
+	{regexp.MustCompile(`(?i)api[_-]?key\s*[:=]\s*[^\s]+`), "api_key=[REDACTED]"},
+	{regexp.MustCompile(`(?i)bearer\s+[a-z0-9\-\._~\+/]+=*`), "Bearer [REDACTED]"},
+	{regexp.MustCompile(`(?i)password\s*[:=]\s*[^\s]+`), "password=[REDACTED]"},
+	{regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "[REDACTED_PRIVATE_KEY]"},
+	{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "[REDACTED_AWS_KEY]"},
+	{regexp.MustCompile(`eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}`), "[REDACTED_TOKEN]"},
 }
 
 func maskSecrets(text string) string {
-	replacements := []struct {
-		re *regexp.Regexp
-		rp string
-	}{
-		{regexp.MustCompile(`(?i)sk-[a-z0-9]{20,}`), "[REDACTED_API_KEY]"},
-		{regexp.MustCompile(`(?i)api[_-]?key\s*[:=]\s*[^\s]+`), "api_key=[REDACTED]"},
-		{regexp.MustCompile(`(?i)bearer\s+[a-z0-9\-\._~\+/]+=*`), "Bearer [REDACTED]"},
-		{regexp.MustCompile(`(?i)password\s*[:=]\s*[^\s]+`), "password=[REDACTED]"},
-		{regexp.MustCompile(`-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----`), "[REDACTED_PRIVATE_KEY]"},
-		{regexp.MustCompile(`AKIA[0-9A-Z]{16}`), "[REDACTED_AWS_KEY]"},
-		{regexp.MustCompile(`[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+\.[A-Za-z0-9-_]+`), "[REDACTED_TOKEN]"},
-	}
 	out := text
-	for _, r := range replacements {
+	for _, r := range secretPatterns {
 		out = r.re.ReplaceAllString(out, r.rp)
 	}
 	return out
 }
 
-func isDenied(relPath string, denylist []string) bool {
-	norm := strings.ToLower(filepath.ToSlash(relPath))
-	for _, d := range denylist {
+// precomputeDenylist splits raw deny patterns into exact-match and prefix
+// sets so per-file checks avoid repeated normalization.
+func (s *Service) precomputeDenylist(raw []string) {
+	s.denyExact = make(map[string]struct{}, len(raw))
+	s.denyPrefixes = make([]string, 0, len(raw))
+	for _, d := range raw {
 		dn := strings.ToLower(filepath.ToSlash(strings.TrimSpace(d)))
 		if dn == "" {
 			continue
 		}
 		if strings.HasSuffix(dn, "/") {
-			if strings.HasPrefix(norm, dn) || strings.Contains(norm, "/"+strings.TrimSuffix(dn, "/")+"/") {
-				return true
-			}
-			continue
+			s.denyPrefixes = append(s.denyPrefixes, dn)
+		} else {
+			s.denyExact[dn] = struct{}{}
 		}
-		if norm == dn || strings.HasSuffix(norm, "/"+dn) || strings.Contains(norm, "/"+dn+"/") {
+	}
+}
+
+func isDenied(relPath string, exact map[string]struct{}, prefixes []string) bool {
+	norm := strings.ToLower(filepath.ToSlash(relPath))
+
+	// exact match (filename or relative path)
+	if _, ok := exact[norm]; ok {
+		return true
+	}
+	// check if any exact entry matches as a path component
+	for dn := range exact {
+		if strings.HasSuffix(norm, "/"+dn) || strings.Contains(norm, "/"+dn+"/") {
+			return true
+		}
+	}
+	// prefix/directory matches
+	for _, dn := range prefixes {
+		if strings.HasPrefix(norm, dn) || strings.Contains(norm, "/"+strings.TrimSuffix(dn, "/")+"/") {
 			return true
 		}
 	}

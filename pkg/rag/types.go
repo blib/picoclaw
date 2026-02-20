@@ -36,8 +36,8 @@ type ChunkRef struct {
 
 type ChunkLoc struct {
 	HeadingPath string `json:"heading_path"`
-	StartChar   int    `json:"start_char"`
-	EndChar     int    `json:"end_char"`
+	StartByte   int    `json:"start_byte"`
+	EndByte     int    `json:"end_byte"`
 }
 
 type ScoreBreakdown struct {
@@ -150,7 +150,6 @@ type docMeta struct {
 	Tags            []string
 	Source          string
 	Confidentiality string
-	ID              string
 }
 
 type FixedProfile struct {

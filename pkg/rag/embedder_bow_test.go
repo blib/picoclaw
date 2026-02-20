@@ -4,6 +4,7 @@ import (
 	"context"
 	"math"
 	"strings"
+	"sync"
 )
 
 // bowEmbedder is a deterministic bag-of-words embedder for tests. It builds a
@@ -11,6 +12,7 @@ import (
 // No API key needed. Not suitable for production — only for testing the
 // ranking/scoring pipeline.
 type bowEmbedder struct {
+	mu    sync.Mutex
 	vocab map[string]int
 	dim   int
 }
@@ -23,6 +25,9 @@ func newBOWEmbedder() *bowEmbedder {
 }
 
 func (b *bowEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	// first pass: grow vocabulary
 	for _, text := range texts {
 		for _, tok := range bowTokenize(text) {
@@ -63,6 +68,8 @@ func (b *bowEmbedder) Embed(_ context.Context, texts []string) ([][]float32, err
 }
 
 func (b *bowEmbedder) Dims() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	return b.dim
 }
 

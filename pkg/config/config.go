@@ -44,6 +44,39 @@ func (f *FlexibleStringSlice) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// Secret is a string type for sensitive values that redacts itself in
+// String(), GoString(), and MarshalJSON() to prevent accidental exposure
+// in logs, debug output, and serialized config. Use .Value() to access
+// the underlying plaintext when actually needed (e.g. HTTP headers).
+type Secret string
+
+// Value returns the plaintext secret.
+func (s Secret) Value() string { return string(s) }
+
+func (s Secret) String() string    { return "[REDACTED]" }
+func (s Secret) GoString() string  { return "Secret([REDACTED])" }
+func (s Secret) MarshalJSON() ([]byte, error) {
+	if s == "" {
+		return []byte(`""`), nil
+	}
+	return []byte(`"[REDACTED]"`), nil
+}
+
+func (s *Secret) UnmarshalJSON(b []byte) error {
+	var v string
+	if err := json.Unmarshal(b, &v); err != nil {
+		return err
+	}
+	*s = Secret(v)
+	return nil
+}
+
+// UnmarshalText implements encoding.TextUnmarshaler for env var parsing.
+func (s *Secret) UnmarshalText(b []byte) error {
+	*s = Secret(string(b))
+	return nil
+}
+
 type Config struct {
 	Agents    AgentsConfig    `json:"agents"`
 	Channels  ChannelsConfig  `json:"channels"`
@@ -242,7 +275,7 @@ type RAGToolsConfig struct {
 	EmbeddingProvider       string   `json:"embedding_provider" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_PROVIDER"`
 	EmbeddingModelID        string   `json:"embedding_model" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL_ID"`
 	EmbeddingAPIBase        string   `json:"api_base" env:"PICOCLAW_TOOLS_RAG_API_BASE"`
-	EmbeddingAPIKey         string   `json:"api_key" env:"PICOCLAW_TOOLS_RAG_API_KEY"`
+	EmbeddingAPIKey         Secret   `json:"api_key" env:"PICOCLAW_TOOLS_RAG_API_KEY"`
 	QueueSize               int      `json:"queue_size" env:"PICOCLAW_TOOLS_RAG_QUEUE_SIZE"`
 	Concurrency             int      `json:"concurrency" env:"PICOCLAW_TOOLS_RAG_CONCURRENCY"`
 	ChunkSoftBytes          int      `json:"chunk_soft_bytes" env:"PICOCLAW_TOOLS_RAG_CHUNK_SOFT_BYTES"`

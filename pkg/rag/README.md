@@ -22,10 +22,13 @@ This package implements a **stable API** with a **pluggable index provider**:
 - `provider.go`: pluggable provider contracts + factory
 - `provider_simple.go`: JSON-backed provider
 - `provider_comet.go`: Comet provider (BM25 + vector hybrid)
+- `store.go`: bbolt + flat-binary persistence layer for comet provider (dirty flag, CRC-protected vectors)
+- `watcher.go`: filesystem watcher with two-tier debounced re-indexing and flushing
 - `embedder.go`: embedding interface + HTTP provider (OpenAI-compatible)
 - `service.go`: indexing, search orchestration, queueing, eval, masking, filtering
 - `service_test.go`: smoke tests for index/search/filter behavior
 - `provider_comet_test.go`: comet provider unit tests (BM25, hybrid, persistence)
+- `watcher_test.go`: watcher integration tests (reindex, flush, dirty flag, event filtering)
 - `embedder_bow_test.go`: deterministic bag-of-words test embedder
 
 Related integration:
@@ -108,10 +111,19 @@ Provider contract (`IndexProvider`):
 - `LoadIndexInfo(...)`
 - `Capabilities()`
 
+Extended contract (`FlushableProvider`, implemented by `comet`):
+
+- `BuildInMemory(ctx, chunks, info)` — rebuild in-memory indexes without persisting; marks dirty flag
+- `Flush() error` — persist current in-memory state to disk; clears dirty flag
+- `Invalidate()` — discard all in-memory state (forces reload on next query)
+- `IsDirty() bool` — returns whether in-memory state has unpersisted changes
+
+The watcher uses this two-phase protocol: fast `BuildInMemory` on file changes, deferred `Flush` on a longer debounce. If the process exits between the two, the dirty flag in bbolt ensures a full rebuild on next start.
+
 On-disk artifacts:
 
 - simple: `workspace/.rag/state/index.json`
-- comet: `workspace/.rag/state/index.json` + `workspace/.rag/state/vectors.json` (when embeddings enabled)
+- comet: `workspace/.rag/state/index.db` (bbolt — metadata + chunks) + `workspace/.rag/state/vectors.bin` (flat binary, when embeddings enabled)
 
 `IndexInfo.index_provider` is persisted and returned in `EvidencePackFull`.
 
@@ -285,7 +297,7 @@ Set `allow_external_embeddings: true` in RAG config and configure an embedding p
 }
 ```
 
-The embedder uses the configured LLM provider's embedding endpoint (OpenAI-compatible API). Embeddings are computed during `BuildIndex` and persisted to `vectors.json` alongside the chunk index.
+The embedder uses the configured LLM provider's embedding endpoint (OpenAI-compatible API). Embeddings are computed during `BuildIndex` (or `BuildInMemory` for live re-indexing) and persisted to `vectors.bin` (CRC-protected flat binary, format v1) alongside the chunk index.
 
 ### Search modes
 
@@ -421,7 +433,7 @@ Current complexity (approx):
 - Search (comet BM25): `O(total_chunks)` BM25 scoring
 - Search (comet hybrid): BM25 + flat vector scan, fused via reciprocal rank fusion
 
-The comet provider keeps indexes in memory and rebuilds from JSON on load. This is suitable for picoclaw's target: personal knowledge bases that fit comfortably in a few MB of RAM.
+The comet provider keeps BM25/vector indexes in memory and rebuilds from bbolt on load. Persistence uses bbolt for chunks/metadata and a CRC-protected flat binary file for vectors (~4x smaller than JSON). Live re-indexing via the FS watcher uses two-tier debounce (2 s reindex / 30 s flush) to balance freshness against disk write frequency. Suitable for picoclaw's target: personal knowledge bases on constrained hardware.
 
 ## 18. Comet provider
 
@@ -435,12 +447,25 @@ The `comet` provider uses [github.com/wizenheimer/comet](https://github.com/wize
 
 ### Persistence
 
-Comet indexes are in-memory. State is persisted as JSON:
+Comet indexes are in-memory. State is persisted via `store.go`:
 
-- `index.json`: chunk metadata + index info (same format as `simple` provider)
-- `vectors.json`: float32 embedding vectors (only when embeddings enabled)
+- `index.db` (bbolt): two buckets — `meta` (index info as JSON) and `chunks` (each chunk JSON-encoded, keyed by uint32 ordinal in big-endian). Opened per-operation (no held file lock between calls).
+- `vectors.bin` (flat binary, format v1): magic + CRC-protected. Layout:
 
-On startup, indexes are rebuilt from the persisted JSON. This is appropriate for picoclaw's target dataset sizes (typical KB fits in a few MB of RAM).
+  ```
+  Offset  Size   Field
+  0       4B     Magic "PCVF" (PicoClaw Vector File)
+  4       2B     Version (uint16 LE, currently 1)
+  6       2B     Reserved (zero)
+  8       4B     Count (uint32 LE, number of vectors)
+  12      4B     Dims (uint32 LE, dimensions per vector)
+  16      N×D×4B Payload (float32 LE, row-major)
+  16+P    4B     CRC32-C (Castagnoli, over header + payload)
+  ```
+
+  ~4x smaller than JSON. Only written when embeddings are enabled. CRC validation on load detects corruption; magic + version enable format evolution.
+
+On load (`ensureLoaded`): chunks are read from bbolt, vectors from the binary file (magic/version/CRC validated), and comet in-memory indexes (BM25, FlatIndex, HybridSearchIndex) are rebuilt. If the dirty flag is set (previous crash before flush), `ensureLoaded` returns `ErrDirtyIndex` and `BuildIndex` must be called to rebuild.
 
 ### Config
 
@@ -455,6 +480,41 @@ On startup, indexes are rebuilt from the persisted JSON. This is appropriate for
 ```
 
 No special build flags or external dependencies required.
+
+### Dirty flag
+
+The bbolt `meta` bucket stores a `dirty` key (`0x01` = dirty, absent/`0x00` = clean). The dirty flag is set when `BuildInMemory` updates in-memory state without persisting, and cleared when `Flush` writes everything to disk.
+
+On startup, if `IsDirty()` returns true, `ensureLoaded` returns `ErrDirtyIndex` — the caller must run a full `BuildIndex` before searches will work. This guarantees crash-consistency: if the process dies between an in-memory rebuild and a flush, the index is automatically rebuilt on next start.
+
+### FS watcher
+
+`watcher.go` provides live re-indexing when knowledge base files change on disk. It uses `fsnotify` (already in go.mod) to watch `kb_root` recursively.
+
+**Two-tier debounce:**
+
+| Tier    | Default | Action                                                         | Cost        |
+| ------- | ------- | -------------------------------------------------------------- | ----------- |
+| Reindex | 2 s     | `BuildInMemory` — rebuild in-memory indexes from changed files | CPU, no I/O |
+| Flush   | 30 s    | `Flush` — persist to bbolt + vectors.bin, clear dirty flag     | Disk write  |
+
+The short reindex debounce keeps search results fresh within seconds of a file save. The long flush debounce batches disk writes so rapid edits don't thrash storage — important on SD cards and eMMC.
+
+**Lifecycle:**
+
+```go
+w := rag.NewWatcher(svc,
+    rag.WithReindexDebounce(2*time.Second),
+    rag.WithFlushDebounce(30*time.Second),
+)
+w.Start(ctx)   // begins watching in background goroutine
+// ...
+w.Stop()       // flushes if dirty, closes fsnotify
+```
+
+**Event filtering:** only `.md` file changes trigger re-indexing. Directory creates are auto-watched. Chmod-only events are ignored.
+
+**Graceful shutdown:** `Stop()` calls `flushIfDirty()` to persist any pending in-memory state before closing, preventing unnecessary rebuilds on next start.
 
 ## 19. Embedding providers
 
@@ -483,7 +543,7 @@ Package tests:
 - `provider_comet_test.go`
   - BM25-only search (no embedder)
   - hybrid search (BOW embedder)
-  - persistence across provider instances
+  - persistence across provider instances (bbolt + binary vectors)
   - chunk fetch by source path + ordinal
   - keyword-only mode override
 
@@ -492,6 +552,13 @@ Package tests:
 
 - `embedder_bow_test.go`
   - deterministic bag-of-words embedder for testing vector paths without API keys
+
+- `watcher_test.go`
+  - reindex on file modification (search finds new content after debounce)
+  - reindex on new file creation
+  - flush clears dirty flag
+  - stop flushes pending dirty state
+  - `isRelevantEvent` table test (7 subtests: .md filtering, chmod-only, non-markdown)
 
 Integration-adjacent test:
 
