@@ -30,23 +30,46 @@ func splitMarkdownChunks(content string, softLimit, hardLimit int) []ChunkLocAnd
 			return
 		}
 		for len(text) > 0 {
-			limit := softLimit
-			if len(text) <= hardLimit {
-				if len(text) < softLimit {
-					limit = len(text)
-				}
-			} else {
-				limit = hardLimit
+			runes := []rune(text)
+			runeSoft := softLimit
+			if runeSoft > len(runes) {
+				runeSoft = len(runes)
 			}
-			part := strings.TrimSpace(text[:limit])
+			runeHard := hardLimit
+			if runeHard > len(runes) {
+				runeHard = len(runes)
+			}
+
+			limit := runeSoft
+			if len(runes) > runeHard {
+				limit = runeHard
+			} else if len(runes) <= runeSoft {
+				limit = len(runes)
+			}
+
+			// Try to break at sentence boundary (. ! ?) within soft limit.
+			if limit < len(runes) {
+				bestBreak := -1
+				for i := limit - 1; i >= limit/2; i-- {
+					if runes[i] == '.' || runes[i] == '!' || runes[i] == '?' {
+						bestBreak = i + 1
+						break
+					}
+				}
+				if bestBreak > 0 {
+					limit = bestBreak
+				}
+			}
+
+			part := strings.TrimSpace(string(runes[:limit]))
 			chunks = append(chunks, ChunkLocAndText{
-				Loc:  ChunkLoc{HeadingPath: headingPath, StartChar: start, EndChar: end},
+				Loc:  ChunkLoc{HeadingPath: headingPath, StartByte: start, EndByte: end},
 				Text: part,
 			})
-			if limit >= len(text) {
+			if limit >= len(runes) {
 				text = ""
 			} else {
-				text = strings.TrimSpace(text[limit:])
+				text = strings.TrimSpace(string(runes[limit:]))
 			}
 		}
 		buf.Reset()
@@ -85,9 +108,15 @@ type ChunkLocAndText struct {
 	Text string
 }
 
+// hspaceRE matches horizontal whitespace (spaces and tabs) but preserves
+// newlines so code blocks and structured content retain visual structure.
+var hspaceRE = regexp.MustCompile(`[^\S\n]+`)
+
 func normalizeText(s string) string {
 	s = strings.ReplaceAll(s, "\r\n", "\n")
 	s = strings.TrimSpace(s)
-	spaceRE := regexp.MustCompile(`\s+`)
-	return strings.TrimSpace(spaceRE.ReplaceAllString(s, " "))
+	s = hspaceRE.ReplaceAllString(s, " ")
+	// collapse runs of blank lines into a single newline
+	s = regexp.MustCompile(`\n{3,}`).ReplaceAllString(s, "\n\n")
+	return strings.TrimSpace(s)
 }

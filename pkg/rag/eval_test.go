@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
 )
@@ -398,9 +399,10 @@ Content about distributed systems replication protocols.
 // ---------------------------------------------------------------------------
 
 func TestFreshnessNormDecay(t *testing.T) {
-	today := freshnessNorm("2026-02-19")
-	monthAgo := freshnessNorm("2026-01-19")
-	yearAgo := freshnessNorm("2025-02-19")
+	ref, _ := time.Parse("2006-01-02", "2026-02-20")
+	today := freshnessNorm("2026-02-19", ref)
+	monthAgo := freshnessNorm("2026-01-19", ref)
+	yearAgo := freshnessNorm("2025-02-19", ref)
 
 	if today <= monthAgo {
 		t.Errorf("today (%f) should score higher than month ago (%f)", today, monthAgo)
@@ -408,7 +410,7 @@ func TestFreshnessNormDecay(t *testing.T) {
 	if monthAgo <= yearAgo {
 		t.Errorf("month ago (%f) should score higher than year ago (%f)", monthAgo, yearAgo)
 	}
-	if empty := freshnessNorm(""); empty != 0 {
+	if empty := freshnessNorm("", ref); empty != 0 {
 		t.Errorf("empty date should return 0, got %f", empty)
 	}
 }

@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+func mustCometProvider(t *testing.T, dir string, embedder Embedder) *cometProvider {
+	t.Helper()
+	p, err := newCometProvider(dir, embedder)
+	if err != nil {
+		t.Fatalf("newCometProvider: %v", err)
+	}
+	t.Cleanup(func() { p.Close() })
+	return p
+}
+
 func testChunks() []IndexedChunk {
 	return []IndexedChunk{
 		{SourcePath: "notes/meeting.md", ChunkOrdinal: 1, Text: "We discussed caching strategy and invalidation policy for api responses", Snippet: "caching strategy..."},
@@ -28,7 +38,7 @@ func testInfo() IndexInfo {
 
 func TestCometBM25Only(t *testing.T) {
 	dir := t.TempDir()
-	p := newCometProvider(dir, nil)
+	p := mustCometProvider(t, dir, nil)
 
 	chunks := testChunks()
 	if err := p.Build(context.Background(), chunks, testInfo()); err != nil {
@@ -52,7 +62,7 @@ func TestCometBM25Only(t *testing.T) {
 func TestCometHybridSearch(t *testing.T) {
 	dir := t.TempDir()
 	emb := newBOWEmbedder()
-	p := newCometProvider(dir, emb)
+	p := mustCometProvider(t, dir, emb)
 
 	chunks := testChunks()
 	if err := p.Build(context.Background(), chunks, testInfo()); err != nil {
@@ -82,14 +92,19 @@ func TestCometPersistence(t *testing.T) {
 	emb := newBOWEmbedder()
 
 	// build with one provider instance
-	p1 := newCometProvider(dir, emb).(*cometProvider)
+	p1 := mustCometProvider(t, dir, emb)
 	chunks := testChunks()
 	if err := p1.Build(context.Background(), chunks, testInfo()); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
+	// close p1 to release bbolt lock before creating a fresh instance
+	if err := p1.Close(); err != nil {
+		t.Fatalf("Close p1: %v", err)
+	}
+
 	// load from disk with a fresh provider (simulates restart)
-	p2 := newCometProvider(dir, emb).(*cometProvider)
+	p2 := mustCometProvider(t, dir, emb)
 	info, err := p2.LoadIndexInfo(context.Background())
 	if err != nil {
 		t.Fatalf("LoadIndexInfo: %v", err)
@@ -113,7 +128,7 @@ func TestCometPersistence(t *testing.T) {
 
 func TestCometFetchChunk(t *testing.T) {
 	dir := t.TempDir()
-	p := newCometProvider(dir, nil)
+	p := mustCometProvider(t, dir, nil)
 
 	chunks := testChunks()
 	if err := p.Build(context.Background(), chunks, testInfo()); err != nil {
@@ -137,7 +152,7 @@ func TestCometFetchChunk(t *testing.T) {
 func TestCometKeywordOnlyMode(t *testing.T) {
 	dir := t.TempDir()
 	emb := newBOWEmbedder()
-	p := newCometProvider(dir, emb).(*cometProvider)
+	p := mustCometProvider(t, dir, emb)
 
 	chunks := testChunks()
 	if err := p.Build(context.Background(), chunks, testInfo()); err != nil {

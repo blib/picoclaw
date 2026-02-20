@@ -7,10 +7,16 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 )
 
 type simpleProvider struct {
 	indexFile string
+
+	mu      sync.RWMutex
+	cached  *IndexStore
+	modTime time.Time
 }
 
 func newSimpleProvider(indexRoot string) IndexProvider {
@@ -22,6 +28,8 @@ func newSimpleProvider(indexRoot string) IndexProvider {
 func (p *simpleProvider) Name() string {
 	return "simple"
 }
+
+func (p *simpleProvider) Close() error { return nil }
 
 func (p *simpleProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{Semantic: false}
@@ -40,7 +48,17 @@ func (p *simpleProvider) Build(_ context.Context, chunks []IndexedChunk, info In
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p.indexFile, b, 0o644)
+	if err := os.WriteFile(p.indexFile, b, 0o644); err != nil {
+		return err
+	}
+
+	// invalidate cache so next read picks up the new data
+	p.mu.Lock()
+	p.cached = nil
+	p.modTime = time.Time{}
+	p.mu.Unlock()
+
+	return nil
 }
 
 func (p *simpleProvider) Search(_ context.Context, query string, opts ProviderSearchOptions) (*ProviderSearchResult, error) {
@@ -109,7 +127,7 @@ func (p *simpleProvider) LoadIndexInfo(_ context.Context) (*IndexInfo, error) {
 }
 
 func (p *simpleProvider) loadStore() (*IndexStore, error) {
-	data, err := os.ReadFile(p.indexFile)
+	info, err := os.Stat(p.indexFile)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, ErrIndexNotBuilt
@@ -117,9 +135,29 @@ func (p *simpleProvider) loadStore() (*IndexStore, error) {
 		return nil, err
 	}
 
+	// fast path: cached and file hasn't changed
+	p.mu.RLock()
+	if p.cached != nil && info.ModTime().Equal(p.modTime) {
+		s := p.cached
+		p.mu.RUnlock()
+		return s, nil
+	}
+	p.mu.RUnlock()
+
+	data, err := os.ReadFile(p.indexFile)
+	if err != nil {
+		return nil, err
+	}
+
 	var store IndexStore
 	if err := json.Unmarshal(data, &store); err != nil {
 		return nil, err
 	}
+
+	p.mu.Lock()
+	p.cached = &store
+	p.modTime = info.ModTime()
+	p.mu.Unlock()
+
 	return &store, nil
 }

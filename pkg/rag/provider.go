@@ -25,6 +25,7 @@ type ProviderHit struct {
 	Chunk         IndexedChunk
 	LexicalScore  float64
 	SemanticScore float64
+	FusedScore    float64 // set when backend fuses lexical+semantic (e.g. RRF); service skips blend
 }
 
 // ProviderSearchResult bundles candidates with index metadata to keep responses
@@ -43,6 +44,18 @@ type IndexProvider interface {
 	Search(ctx context.Context, query string, opts ProviderSearchOptions) (*ProviderSearchResult, error)
 	FetchChunk(ctx context.Context, sourcePath string, chunkOrdinal int) (*IndexedChunk, error)
 	LoadIndexInfo(ctx context.Context) (*IndexInfo, error)
+	Close() error
+}
+
+// FlushableProvider extends IndexProvider with two-phase write support:
+// BuildInMemory rebuilds in-memory indexes without touching disk,
+// Flush persists the current state to storage and clears the dirty flag.
+type FlushableProvider interface {
+	IndexProvider
+	BuildInMemory(ctx context.Context, chunks []IndexedChunk, info IndexInfo) error
+	Flush() error
+	Invalidate()
+	IsDirty() bool
 }
 
 func newIndexProvider(workspace string, cfg config.RAGToolsConfig, indexRoot string, embedder Embedder) (IndexProvider, error) {
@@ -55,7 +68,11 @@ func newIndexProvider(workspace string, cfg config.RAGToolsConfig, indexRoot str
 	case "simple", "json":
 		return newSimpleProvider(indexRoot), nil
 	case "comet":
-		return newCometProvider(indexRoot, embedder), nil
+		p, err := newCometProvider(indexRoot, embedder)
+		if err != nil {
+			return nil, fmt.Errorf("comet provider: %w", err)
+		}
+		return p, nil
 	default:
 		return nil, fmt.Errorf("unsupported rag index_provider: %s", cfg.IndexProvider)
 	}

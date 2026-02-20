@@ -2,30 +2,50 @@ package rag
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/wizenheimer/comet"
 )
 
 type cometProvider struct {
-	stateDir string
+	mu       sync.RWMutex
 	embedder Embedder
+	store    *Store
 
 	chunks  []IndexedChunk
+	vectors [][]float32
+	info    *IndexInfo
 	txtIdx  *comet.BM25SearchIndex
 	hybrid  comet.HybridSearchIndex
 	hasVecs bool
 	vecDims int
+	dirty   bool
 }
 
-func newCometProvider(indexRoot string, embedder Embedder) IndexProvider {
-	return &cometProvider{
-		stateDir: filepath.Join(indexRoot, "state"),
-		embedder: embedder,
+func newCometProvider(indexRoot string, embedder Embedder) (*cometProvider, error) {
+	stateDir := filepath.Join(indexRoot, "state")
+	store, err := OpenStore(stateDir)
+	if err != nil {
+		return nil, err
 	}
+	return &cometProvider{
+		embedder: embedder,
+		store:    store,
+	}, nil
+}
+
+// Close releases the bbolt database. Safe to call multiple times.
+func (p *cometProvider) Close() error {
+	if p.store != nil {
+		err := p.store.Close()
+		p.store = nil
+		return err
+	}
+	return nil
 }
 
 func (p *cometProvider) Name() string { return "comet" }
@@ -34,15 +54,82 @@ func (p *cometProvider) Capabilities() ProviderCapabilities {
 	return ProviderCapabilities{Semantic: p.embedder != nil}
 }
 
+// Build rebuilds in-memory indexes and flushes to disk in one shot.
+// Used by BuildIndex (CLI, one-shot mode). For watched mode, use
+// BuildInMemory + Flush.
 func (p *cometProvider) Build(ctx context.Context, chunks []IndexedChunk, info IndexInfo) error {
-	if err := os.MkdirAll(p.stateDir, 0o755); err != nil {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.embedAndBuild(ctx, chunks, info); err != nil {
 		return err
 	}
+	return p.flushLocked()
+}
 
+// BuildInMemory rebuilds in-memory indexes without touching disk.
+// Marks the provider as dirty so Flush must be called eventually.
+func (p *cometProvider) BuildInMemory(ctx context.Context, chunks []IndexedChunk, info IndexInfo) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if err := p.embedAndBuild(ctx, chunks, info); err != nil {
+		return err
+	}
+	p.dirty = true
+	return p.store.SetDirty(true)
+}
+
+// Flush persists current in-memory state to disk and clears dirty flag.
+func (p *cometProvider) Flush() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.flushLocked()
+}
+
+// flushLocked performs the flush while the caller already holds p.mu.
+func (p *cometProvider) flushLocked() error {
+	if p.info == nil {
+		return nil
+	}
+	if err := p.store.SaveIndex(*p.info, p.chunks); err != nil {
+		return err
+	}
+	if err := p.store.SaveVectors(p.vectors); err != nil {
+		return err
+	}
+	if err := p.store.SetDirty(false); err != nil {
+		return err
+	}
+	p.dirty = false
+	return nil
+}
+
+// Invalidate clears in-memory state so the next operation reloads from disk.
+func (p *cometProvider) Invalidate() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.chunks = nil
+	p.vectors = nil
+	p.info = nil
+	p.txtIdx = nil
+	p.hybrid = nil
+	p.hasVecs = false
+	p.dirty = false
+}
+
+// IsDirty returns whether in-memory state is ahead of disk.
+func (p *cometProvider) IsDirty() bool {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.dirty
+}
+
+func (p *cometProvider) embedAndBuild(ctx context.Context, chunks []IndexedChunk, info IndexInfo) error {
 	p.chunks = chunks
 	p.hasVecs = false
+	p.vectors = nil
+	infoCopy := info
+	p.info = &infoCopy
 
-	var vectors [][]float32
 	if p.embedder != nil && len(chunks) > 0 {
 		const batchSize = 64
 		allVecs := make([][]float32, 0, len(chunks))
@@ -61,37 +148,12 @@ func (p *cometProvider) Build(ctx context.Context, chunks []IndexedChunk, info I
 			}
 			allVecs = append(allVecs, vecs...)
 		}
-		vectors = allVecs
+		p.vectors = allVecs
 		p.vecDims = p.embedder.Dims()
 		p.hasVecs = true
 	}
 
-	if err := p.buildIndexes(chunks, vectors); err != nil {
-		return err
-	}
-
-	store := IndexStore{Info: info, Chunks: chunks}
-	data, err := json.MarshalIndent(store, "", "  ")
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(p.chunksPath(), data, 0o644); err != nil {
-		return err
-	}
-
-	if len(vectors) > 0 {
-		vdata, err := json.Marshal(vectors)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(p.vectorsPath(), vdata, 0o644); err != nil {
-			return err
-		}
-	} else {
-		os.Remove(p.vectorsPath())
-	}
-
-	return nil
+	return p.buildIndexes(chunks, p.vectors)
 }
 
 func (p *cometProvider) buildIndexes(chunks []IndexedChunk, vectors [][]float32) error {
@@ -128,6 +190,9 @@ func (p *cometProvider) Search(ctx context.Context, query string, opts ProviderS
 		return nil, err
 	}
 
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	if len(p.chunks) == 0 {
 		info, _ := p.LoadIndexInfo(ctx)
 		if info == nil {
@@ -148,8 +213,8 @@ func (p *cometProvider) Search(ctx context.Context, query string, opts ProviderS
 	return p.searchTextOnly(ctx, query, limit)
 }
 
-func (p *cometProvider) searchTextOnly(_ context.Context, query string, limit int) (*ProviderSearchResult, error) {
-	info, err := p.LoadIndexInfo(context.Background())
+func (p *cometProvider) searchTextOnly(ctx context.Context, query string, limit int) (*ProviderSearchResult, error) {
+	info, err := p.LoadIndexInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -185,7 +250,13 @@ func (p *cometProvider) searchHybrid(ctx context.Context, query string, limit in
 
 	qvecs, err := p.embedder.Embed(ctx, []string{query})
 	if err != nil {
-		return p.searchTextOnly(ctx, query, limit)
+		res, fallbackErr := p.searchTextOnly(ctx, query, limit)
+		if fallbackErr != nil {
+			return nil, fallbackErr
+		}
+		res.IndexInfo.Warnings = append(res.IndexInfo.Warnings,
+			fmt.Sprintf("semantic_fallback_to_keyword: %v", err))
+		return res, nil
 	}
 
 	results, err := p.hybrid.NewSearch().
@@ -205,8 +276,8 @@ func (p *cometProvider) searchHybrid(ctx context.Context, query string, limit in
 			continue
 		}
 		hits = append(hits, ProviderHit{
-			Chunk:        p.chunks[id],
-			LexicalScore: r.Score,
+			Chunk:      p.chunks[id],
+			FusedScore: r.Score,
 		})
 	}
 
@@ -217,6 +288,10 @@ func (p *cometProvider) FetchChunk(_ context.Context, sourcePath string, chunkOr
 	if err := p.ensureLoaded(); err != nil {
 		return nil, err
 	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
 	norm := filepath.ToSlash(sourcePath)
 	for i := range p.chunks {
 		if p.chunks[i].SourcePath == norm && p.chunks[i].ChunkOrdinal == chunkOrdinal {
@@ -228,56 +303,65 @@ func (p *cometProvider) FetchChunk(_ context.Context, sourcePath string, chunkOr
 }
 
 func (p *cometProvider) LoadIndexInfo(_ context.Context) (*IndexInfo, error) {
-	store, err := p.loadStore()
-	if err != nil {
-		return nil, err
-	}
-	info := store.Info
-	return &info, nil
+	return p.store.LoadIndexInfo()
 }
 
+// ErrDirtyIndex signals that the on-disk index was not cleanly flushed and
+// must be rebuilt from source files before it can be used.
+var ErrDirtyIndex = errors.New("rag index dirty: rebuild required")
+
+// ensureLoaded loads from disk if needed. Acquires a write lock internally
+// only when loading is required, eliminating the unsafe RLock→Lock upgrade.
+// Callers should NOT hold any lock when calling this.
 func (p *cometProvider) ensureLoaded() error {
+	p.mu.RLock()
+	if len(p.chunks) > 0 {
+		p.mu.RUnlock()
+		return nil
+	}
+	p.mu.RUnlock()
+
+	// Slow path: take write lock and load from disk.
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// Double-check after acquiring write lock.
 	if len(p.chunks) > 0 {
 		return nil
 	}
-	store, err := p.loadStore()
+
+	if p.store.IsDirty() {
+		return ErrDirtyIndex
+	}
+	chunks, err := p.store.LoadChunks()
 	if err != nil {
 		return err
 	}
-	p.chunks = store.Chunks
+	vectors, err := p.store.LoadVectors()
+	if err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return nil
+	}
+	p.chunks = chunks
+	p.vectors = vectors
 
-	var vectors [][]float32
-	if data, err := os.ReadFile(p.vectorsPath()); err == nil {
-		if err := json.Unmarshal(data, &vectors); err == nil && len(vectors) == len(p.chunks) {
-			p.hasVecs = true
-			if len(vectors) > 0 {
-				p.vecDims = len(vectors[0])
-			}
+	if len(vectors) == len(p.chunks) {
+		p.hasVecs = true
+		if len(vectors) > 0 {
+			p.vecDims = len(vectors[0])
 		}
+	}
+
+	// Detect embedding model change: stored vectors have different
+	// dimensions than the current embedder would produce.
+	if p.hasVecs && p.embedder != nil && p.embedder.Dims() > 0 && p.vecDims != p.embedder.Dims() {
+		p.chunks = nil
+		p.vectors = nil
+		p.hasVecs = false
+		return fmt.Errorf("rag index embedding dimensions mismatch: stored=%d, embedder=%d; rebuild required", p.vecDims, p.embedder.Dims())
 	}
 
 	return p.buildIndexes(p.chunks, vectors)
-}
-
-func (p *cometProvider) loadStore() (*IndexStore, error) {
-	data, err := os.ReadFile(p.chunksPath())
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, ErrIndexNotBuilt
-		}
-		return nil, err
-	}
-	var store IndexStore
-	if err := json.Unmarshal(data, &store); err != nil {
-		return nil, err
-	}
-	return &store, nil
-}
-
-func (p *cometProvider) chunksPath() string {
-	return filepath.Join(p.stateDir, "index.json")
-}
-
-func (p *cometProvider) vectorsPath() string {
-	return filepath.Join(p.stateDir, "vectors.json")
 }

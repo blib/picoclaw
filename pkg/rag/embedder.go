@@ -6,12 +6,21 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/logger"
+)
+
+// Shared HTTP clients for connection pooling.
+// Created once at package initialization to enable connection reuse across requests.
+var (
+	// ollamaClient is used for quick API checks (tags, status)
+	ollamaClient = &http.Client{Timeout: 5 * time.Second}
+	// ollamaPullClient has a long timeout for model pulls (can take several minutes)
+	ollamaPullClient = &http.Client{Timeout: 10 * time.Minute}
 )
 
 // Embedder computes dense vector representations for text chunks.
@@ -116,6 +125,7 @@ func newEmbedder(provider, model, apiBase, apiKey string, allowExternal bool) Em
 		apiKey:   apiKey,
 		model:    model,
 		provider: provider,
+		dims:     info.Dims, // pre-set from provider config; 0 means discover on first call
 		client: &http.Client{
 			Timeout: 60 * time.Second,
 		},
@@ -136,7 +146,8 @@ type httpEmbedder struct {
 	model    string
 	provider string
 	client   *http.Client
-	dims     int // cached after first call
+	dimsOnce sync.Once
+	dims     int // set once from provider config or first API response
 }
 
 // ollamaBase returns the Ollama native API base (without /v1 suffix).
@@ -153,10 +164,8 @@ func (e *httpEmbedder) ollamaBase() string {
 // Best-effort: logs and continues on failure — Embed will fail with a clear
 // error if the model truly isn't available.
 func ollamaPullIfNeeded(ollamaBase, model string) {
-	client := &http.Client{Timeout: 5 * time.Second}
-
 	// Check if model is already available via /api/tags
-	resp, err := client.Get(ollamaBase + "/api/tags")
+	resp, err := ollamaClient.Get(ollamaBase + "/api/tags")
 	if err != nil {
 		logger.Info(fmt.Sprintf("ollama not reachable at %s: %v", ollamaBase, err))
 		return
@@ -185,8 +194,7 @@ func ollamaPullIfNeeded(ollamaBase, model string) {
 		"name":   model,
 		"stream": false,
 	})
-	pullClient := &http.Client{Timeout: 10 * time.Minute}
-	pullResp, err := pullClient.Post(ollamaBase+"/api/pull", "application/json", bytes.NewReader(pullBody))
+	pullResp, err := ollamaPullClient.Post(ollamaBase+"/api/pull", "application/json", bytes.NewReader(pullBody))
 	if err != nil {
 		logger.Warn(fmt.Sprintf("ollama pull %q failed: %v", model, err))
 		return
@@ -267,7 +275,7 @@ func (e *httpEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 	}
 
 	if e.dims == 0 && len(vecs) > 0 && len(vecs[0]) > 0 {
-		e.dims = len(vecs[0])
+		e.dimsOnce.Do(func() { e.dims = len(vecs[0]) })
 	}
 
 	return vecs, nil
@@ -277,21 +285,4 @@ func (e *httpEmbedder) Dims() int {
 	return e.dims
 }
 
-// cosine computes cosine similarity between two vectors. Returns 0 on
-// degenerate inputs to keep scoring deterministic.
-func cosine(a, b []float32) float64 {
-	if len(a) != len(b) || len(a) == 0 {
-		return 0
-	}
-	var dot, normA, normB float64
-	for i := range a {
-		dot += float64(a[i]) * float64(b[i])
-		normA += float64(a[i]) * float64(a[i])
-		normB += float64(b[i]) * float64(b[i])
-	}
-	denom := math.Sqrt(normA) * math.Sqrt(normB)
-	if denom == 0 {
-		return 0
-	}
-	return dot / denom
-}
+
