@@ -101,7 +101,7 @@ Queue helpers:
 
 ### Versioning
 
-- `document_version = sha256(raw_bytes)`
+- `document_version = base64url_raw(sha256(raw_bytes))` (43 chars vs 64 for hex)
 - If content changes, references are still resolvable by `chunk_ref`, but semantic meaning may drift (known MVP tradeoff)
 
 ## 5. Provider model

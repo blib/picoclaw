@@ -3,7 +3,7 @@ package rag
 import (
 	"context"
 	"crypto/sha256"
-	"encoding/hex"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"math"
@@ -304,7 +304,7 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 			meta.Confidentiality = "internal"
 		}
 
-		docVersion := sha256Hex(data)
+		docVersion := sha256B64(data)
 		docType := classifyDocType(relToKB)
 		effectiveDate := meta.Date
 		if meta.EffectiveDate != "" {
@@ -340,7 +340,7 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 				ChunkOrdinal:    i + 1,
 				ChunkLoc:        c.Loc,
 				DocumentVersion: docVersion,
-				ParagraphID:     sha256Hex([]byte(relToKB + "\n" + norm)),
+				ParagraphID:     sha256B64([]byte(relToKB + "\n" + norm)),
 				Title:           meta.Title,
 				Date:            effectiveDate,
 				Project:         strings.ToLower(strings.TrimSpace(meta.Project)),
@@ -369,7 +369,7 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 		IndexProvider:    provider.Name(),
 		BuiltAt:          now.Format(time.RFC3339),
 		EmbeddingModelID: s.cfg.EmbeddingModelID,
-		ChunkingHash:     sha256Hex([]byte(fmt.Sprintf("%s:%d:%d:%d", s.chunker.Name(), s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes, s.cfg.MaxChunksPerDocument))),
+		ChunkingHash:     sha256B64([]byte(fmt.Sprintf("%s:%d:%d:%d", s.chunker.Name(), s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes, s.cfg.MaxChunksPerDocument))),
 		Warnings:         warnings,
 		TotalDocuments:   docCount,
 		TotalChunks:      len(indexedChunks),
@@ -1295,7 +1295,7 @@ func isWithinPath(candidate, root string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
-func sha256Hex(data []byte) string {
+func sha256B64(data []byte) string {
 	sum := sha256.Sum256(data)
-	return hex.EncodeToString(sum[:])
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
