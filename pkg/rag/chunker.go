@@ -5,6 +5,78 @@ import (
 	"strings"
 )
 
+// Chunker splits document content into chunks for indexing.
+// Implementations must be deterministic for reproducible evaluations.
+type Chunker interface {
+	// Name returns a short identifier (e.g. "markdown", "fixed-size").
+	Name() string
+	// Chunk splits content into located text chunks.
+	Chunk(content string) []ChunkLocAndText
+}
+
+// MarkdownChunker splits markdown content by headings and blank lines,
+// respecting soft/hard byte limits with sentence-boundary breaking.
+type MarkdownChunker struct {
+	SoftLimit int
+	HardLimit int
+}
+
+func (c MarkdownChunker) Name() string { return "markdown" }
+func (c MarkdownChunker) Chunk(content string) []ChunkLocAndText {
+	return splitMarkdownChunks(content, c.SoftLimit, c.HardLimit)
+}
+
+// FixedSizeChunker splits content into fixed-size byte chunks, breaking at
+// whitespace boundaries when possible.
+type FixedSizeChunker struct {
+	Size int
+}
+
+func (c FixedSizeChunker) Name() string { return "fixed-size" }
+func (c FixedSizeChunker) Chunk(content string) []ChunkLocAndText {
+	size := c.Size
+	if size <= 0 {
+		size = 1024
+	}
+	runes := []rune(content)
+	chunks := make([]ChunkLocAndText, 0, len(runes)/size+1)
+	pos := 0
+	for pos < len(runes) {
+		end := pos + size
+		if end > len(runes) {
+			end = len(runes)
+		}
+		// Try to break at whitespace.
+		if end < len(runes) {
+			best := -1
+			start := end - size/4
+			if start < pos {
+				start = pos
+			}
+			for i := end - 1; i >= start; i-- {
+				if runes[i] == ' ' || runes[i] == '\n' || runes[i] == '\t' {
+					best = i + 1
+					break
+				}
+			}
+			if best > pos {
+				end = best
+			}
+		}
+		text := strings.TrimSpace(string(runes[pos:end]))
+		if text != "" {
+			byteStart := len(string(runes[:pos]))
+			byteEnd := len(string(runes[:end]))
+			chunks = append(chunks, ChunkLocAndText{
+				Loc:  ChunkLoc{StartByte: byteStart, EndByte: byteEnd},
+				Text: text,
+			})
+		}
+		pos = end
+	}
+	return chunks
+}
+
 var headingRE = regexp.MustCompile(`^(#{1,6})\s+(.+)$`)
 
 func splitMarkdownChunks(content string, softLimit, hardLimit int) []ChunkLocAndText {
