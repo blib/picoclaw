@@ -174,8 +174,8 @@ type httpEmbedder struct {
 func (e *httpEmbedder) ollamaBase() string {
 	base := e.apiBase
 	base = strings.TrimRight(base, "/")
-	if strings.HasSuffix(base, "/v1") {
-		base = strings.TrimSuffix(base, "/v1")
+	if before, ok := strings.CutSuffix(base, "/v1"); ok {
+		base = before
 	}
 	return base
 }
@@ -331,5 +331,3 @@ func (e *httpEmbedder) ResetUsage() {
 func (e *httpEmbedder) Dims() int {
 	return e.dims
 }
-
-
