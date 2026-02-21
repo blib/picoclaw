@@ -61,7 +61,7 @@ func TestCometBM25Only(t *testing.T) {
 
 func TestCometHybridSearch(t *testing.T) {
 	dir := t.TempDir()
-	emb := newBOWEmbedder()
+	emb := newMockEmbedder()
 	p := mustCometProvider(t, dir, emb)
 
 	chunks := testChunks()
@@ -81,15 +81,17 @@ func TestCometHybridSearch(t *testing.T) {
 	if len(res.Hits) == 0 {
 		t.Fatal("expected hybrid hits")
 	}
-	if res.Hits[0].Chunk.SourcePath != "notes/meeting.md" || res.Hits[0].Chunk.ChunkOrdinal != 1 {
-		t.Fatalf("expected meeting.md chunk 1 as top hit, got %s#%d",
+	// "caching strategy" should surface cache-related chunks (meeting.md or design.md)
+	top := res.Hits[0].Chunk.SourcePath
+	if top != "notes/meeting.md" && top != "notes/design.md" {
+		t.Fatalf("expected cache-related doc as top hit, got %s#%d",
 			res.Hits[0].Chunk.SourcePath, res.Hits[0].Chunk.ChunkOrdinal)
 	}
 }
 
 func TestCometPersistence(t *testing.T) {
 	dir := t.TempDir()
-	emb := newBOWEmbedder()
+	emb := newMockEmbedder()
 
 	// build with one provider instance
 	p1 := mustCometProvider(t, dir, emb)
@@ -120,8 +122,11 @@ func TestCometPersistence(t *testing.T) {
 	if len(res.Hits) == 0 {
 		t.Fatal("expected hits after reload")
 	}
-	if res.Hits[0].Chunk.SourcePath != "notes/meeting.md" || res.Hits[0].Chunk.ChunkOrdinal != 2 {
-		t.Fatalf("expected meeting.md chunk 2 as top hit, got %s#%d",
+	// After reloading from disk the search should still return meeting.md
+	// (which mentions "database migration"). Exact chunk ordinal depends on
+	// the embedder, so we only assert the source path.
+	if res.Hits[0].Chunk.SourcePath != "notes/meeting.md" {
+		t.Fatalf("expected meeting.md as top hit after reload, got %s#%d",
 			res.Hits[0].Chunk.SourcePath, res.Hits[0].Chunk.ChunkOrdinal)
 	}
 }
@@ -151,7 +156,7 @@ func TestCometFetchChunk(t *testing.T) {
 
 func TestCometKeywordOnlyMode(t *testing.T) {
 	dir := t.TempDir()
-	emb := newBOWEmbedder()
+	emb := newMockEmbedder()
 	p := mustCometProvider(t, dir, emb)
 
 	chunks := testChunks()

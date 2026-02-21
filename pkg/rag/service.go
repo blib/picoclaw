@@ -130,6 +130,18 @@ func NewService(workspace string, cfg config.RAGToolsConfig, providers config.Pr
 	for _, opt := range opts {
 		opt(svc)
 	}
+
+	// Create chunker from config if none was injected via WithChunker.
+	if svc.chunker == nil {
+		c, err := NewChunkerFromConfig(cfg, svc.embedder)
+		if err != nil {
+			logger.Warn(fmt.Sprintf("rag: chunker init failed (%v), falling back to markdown", err))
+			svc.chunker = MarkdownChunker{SoftLimit: cfg.ChunkSoftBytes, HardLimit: cfg.ChunkHardBytes}
+		} else {
+			svc.chunker = c
+		}
+	}
+
 	return svc
 }
 
@@ -143,13 +155,10 @@ func resolveRAGPath(workspace, value string) string {
 	return filepath.Join(workspace, value)
 }
 
-// chunkContent uses the configured chunker or falls back to the default
-// markdown chunker with the service's soft/hard byte limits.
+// chunkContent delegates to the configured chunker. The chunker is always
+// set at construction time (via config or WithChunker option).
 func (s *Service) chunkContent(body string) []ChunkLocAndText {
-	if s.chunker != nil {
-		return s.chunker.Chunk(body)
-	}
-	return splitMarkdownChunks(body, s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes)
+	return s.chunker.Chunk(body)
 }
 
 // RetryAfterSeconds exposes a deterministic backoff hint so callers can retry
@@ -308,7 +317,22 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 			warnings = append(warnings, fmt.Sprintf("max_chunks_per_document:%s", relToKB))
 		}
 
+		// For hierarchical chunker: map chunk-local ParentIndex to absolute
+		// ordinal within the indexedChunks slice.
+		baseOrdinal := len(indexedChunks)
+
 		for i, c := range chunks {
+			isParent := false
+			var parentOrdinal *int
+			if c.Loc.ParentIndex != nil {
+				// this is a child chunk — compute absolute parent ordinal
+				absParent := baseOrdinal + *c.Loc.ParentIndex + 1 // +1 for 1-based ordinals
+				parentOrdinal = &absParent
+			} else if s.chunker.Name() == "hierarchical" {
+				// chunks without ParentIndex in hierarchical mode are parents
+				isParent = true
+			}
+
 			norm := normalizeText(c.Text)
 			flags, risk := detectInjectionRisk(norm)
 			indexedChunks = append(indexedChunks, IndexedChunk{
@@ -327,6 +351,8 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 				Snippet:         safeSnippet(norm, 600),
 				Flags:           flags,
 				RiskScore:       risk,
+				ParentOrdinal:   parentOrdinal,
+				IsParent:        isParent,
 			})
 		}
 		docCount++
@@ -343,7 +369,7 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 		IndexProvider:    provider.Name(),
 		BuiltAt:          now.Format(time.RFC3339),
 		EmbeddingModelID: s.cfg.EmbeddingModelID,
-		ChunkingHash:     sha256Hex([]byte(fmt.Sprintf("%d:%d:%d", s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes, s.cfg.MaxChunksPerDocument))),
+		ChunkingHash:     sha256Hex([]byte(fmt.Sprintf("%s:%d:%d:%d", s.chunker.Name(), s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes, s.cfg.MaxChunksPerDocument))),
 		Warnings:         warnings,
 		TotalDocuments:   docCount,
 		TotalChunks:      len(indexedChunks),
@@ -648,6 +674,42 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		return cands[i].Score > cands[j].Score
 	})
 
+	// --- min-score cutoff: request > config > profile ---
+	minScore := profile.MinScore
+	if s.cfg.MinScore > 0 {
+		minScore = s.cfg.MinScore
+	}
+	if req.MinScore != nil {
+		minScore = *req.MinScore
+	}
+	if minScore > 0 {
+		cutIdx := len(cands)
+		for i, c := range cands {
+			if c.Score < minScore {
+				cutIdx = i
+				break
+			}
+		}
+		dropped := len(cands) - cutIdx
+		cands = cands[:cutIdx]
+		if dropped > 0 {
+			notes = append(notes, fmt.Sprintf("min_score=%.3f dropped %d low-relevance candidate(s)", minScore, dropped))
+		}
+	}
+
+	if len(cands) == 0 {
+		empty := &EvidencePackFull{
+			Query:     query,
+			ProfileID: profile.ID,
+			IndexInfo: searchRes.IndexInfo,
+			Items:     []EvidenceItemFull{},
+			Coverage:  Coverage{},
+			Notes:     append(notes, "insufficient evidence"),
+		}
+		compact := toLLMCompact(query, profile.ID, empty.Items, empty.Notes)
+		return &SearchResult{Full: empty, LLM: compact}, nil
+	}
+
 	if logger.IsDebug() {
 		logger.Debug(fmt.Sprintf("rag search: query=%q mode=%s candidates=%d", query, mode, len(cands)))
 		for i, c := range cands {
@@ -779,6 +841,89 @@ func (s *Service) FetchChunk(ctx context.Context, sourcePath string, chunkOrdina
 		Text:         chunk.Text,
 		Snippet:      chunk.Snippet,
 	}, nil
+}
+
+// GetIndexInfo returns metadata about the current index without loading chunks.
+func (s *Service) GetIndexInfo(ctx context.Context) (*IndexInfo, error) {
+	provider, err := s.providerOrErr()
+	if err != nil {
+		return nil, err
+	}
+	return provider.LoadIndexInfo(ctx)
+}
+
+// Config returns the effective RAG configuration (with defaults applied).
+func (s *Service) Config() config.RAGToolsConfig {
+	return s.cfg
+}
+
+// ChunkerName returns the name of the active chunking strategy.
+func (s *Service) ChunkerName() string {
+	if s.chunker != nil {
+		return s.chunker.Name()
+	}
+	return "unknown"
+}
+
+// ListDocuments returns per-document summaries aggregated from indexed chunks.
+func (s *Service) ListDocuments(ctx context.Context) ([]DocumentSummary, error) {
+	provider, err := s.providerOrErr()
+	if err != nil {
+		return nil, err
+	}
+	chunks, err := provider.LoadChunks(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	type docAcc struct {
+		path      string
+		chunks    int
+		totalSize int
+		title     string
+		docType   string
+		tags      map[string]struct{}
+	}
+	order := make([]string, 0)
+	docs := make(map[string]*docAcc)
+	for _, ch := range chunks {
+		acc, ok := docs[ch.SourcePath]
+		if !ok {
+			acc = &docAcc{path: ch.SourcePath, tags: make(map[string]struct{})}
+			docs[ch.SourcePath] = acc
+			order = append(order, ch.SourcePath)
+		}
+		acc.chunks++
+		acc.totalSize += len(ch.Text)
+		if acc.title == "" && ch.Title != "" {
+			acc.title = ch.Title
+		}
+		if acc.docType == "" && ch.DocType != "" {
+			acc.docType = ch.DocType
+		}
+		for _, t := range ch.Tags {
+			acc.tags[t] = struct{}{}
+		}
+	}
+
+	result := make([]DocumentSummary, 0, len(order))
+	for _, path := range order {
+		acc := docs[path]
+		tags := make([]string, 0, len(acc.tags))
+		for t := range acc.tags {
+			tags = append(tags, t)
+		}
+		sort.Strings(tags)
+		result = append(result, DocumentSummary{
+			SourcePath: acc.path,
+			Title:      acc.title,
+			DocType:    acc.docType,
+			Tags:       tags,
+			Chunks:     acc.chunks,
+			TotalBytes: acc.totalSize,
+		})
+	}
+	return result, nil
 }
 
 func validateFilters(filters SearchFilters) error {

@@ -387,6 +387,10 @@ func (p *cometProvider) LoadIndexInfo(_ context.Context) (*IndexInfo, error) {
 	return p.store.LoadIndexInfo()
 }
 
+func (p *cometProvider) LoadChunks(_ context.Context) ([]IndexedChunk, error) {
+	return p.store.LoadChunks()
+}
+
 // ErrDirtyIndex signals that the on-disk index was not cleanly flushed and
 // must be rebuilt from source files before it can be used.
 var ErrDirtyIndex = errors.New("rag index dirty: rebuild required")

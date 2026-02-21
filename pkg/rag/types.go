@@ -26,6 +26,7 @@ type SearchRequest struct {
 	ProfileID string        `json:"profile_id,omitempty"`
 	Mode      SearchMode    `json:"mode,omitempty"`
 	TopK      int           `json:"top_k,omitempty"`
+	MinScore  *float64      `json:"min_score,omitempty"` // override profile/config min score; nil = use default
 	Filters   SearchFilters `json:"filters,omitempty"`
 }
 
@@ -38,6 +39,7 @@ type ChunkLoc struct {
 	HeadingPath string `json:"heading_path"`
 	StartByte   int    `json:"start_byte"`
 	EndByte     int    `json:"end_byte"`
+	ParentIndex *int   `json:"parent_index,omitempty"`
 }
 
 type ScoreBreakdown struct {
@@ -59,6 +61,7 @@ type EvidenceItemFull struct {
 	Score           float64        `json:"score"`
 	ScoreBreakdown  ScoreBreakdown `json:"score_breakdown,omitempty"`
 	Flags           []string       `json:"flags,omitempty"`
+	ParentContext   *string        `json:"parent_context,omitempty"`
 }
 
 type Coverage struct {
@@ -127,11 +130,23 @@ type IndexedChunk struct {
 	Snippet         string   `json:"snippet"`
 	Flags           []string `json:"flags,omitempty"`
 	RiskScore       float64  `json:"risk_score,omitempty"`
+	ParentOrdinal   *int     `json:"parent_ordinal,omitempty"`
+	IsParent        bool     `json:"is_parent,omitempty"`
 }
 
 type IndexStore struct {
 	Info   IndexInfo      `json:"info"`
 	Chunks []IndexedChunk `json:"chunks"`
+}
+
+// DocumentSummary is an aggregated view of a single indexed document.
+type DocumentSummary struct {
+	SourcePath string   `json:"source_path"`
+	Title      string   `json:"title,omitempty"`
+	DocType    string   `json:"doc_type,omitempty"`
+	Tags       []string `json:"tags,omitempty"`
+	Chunks     int      `json:"chunks"`
+	TotalBytes int      `json:"total_bytes"`
 }
 
 type ChunkResult struct {
@@ -163,6 +178,7 @@ type FixedProfile struct {
 	WeightMetadataBoost float64
 	PerSourceCap        int
 	PreferNotesPolicy   bool
+	MinScore            float64 // results below this final score are dropped; 0 = no cutoff
 }
 
 func parseISODate(value string) (time.Time, bool) {

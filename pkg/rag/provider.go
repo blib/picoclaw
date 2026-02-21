@@ -43,6 +43,7 @@ type IndexProvider interface {
 	Search(ctx context.Context, query string, opts ProviderSearchOptions) (*ProviderSearchResult, error)
 	FetchChunk(ctx context.Context, sourcePath string, chunkOrdinal int) (*IndexedChunk, error)
 	LoadIndexInfo(ctx context.Context) (*IndexInfo, error)
+	LoadChunks(ctx context.Context) ([]IndexedChunk, error)
 	Close() error
 }
 

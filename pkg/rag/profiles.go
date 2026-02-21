@@ -14,6 +14,7 @@ func FixedProfiles() map[string]FixedProfile {
 			WeightFreshness:     0.05,
 			WeightMetadataBoost: 0.00,
 			PerSourceCap:        3,
+			MinScore:            0.05,
 		},
 		"decisions_recent": {
 			ID:                  "decisions_recent",
@@ -26,6 +27,7 @@ func FixedProfiles() map[string]FixedProfile {
 			WeightMetadataBoost: 0.10,
 			PerSourceCap:        4,
 			PreferNotesPolicy:   true,
+			MinScore:            0.10,
 		},
 		"templates_lookup": {
 			ID:                  "templates_lookup",
@@ -37,6 +39,7 @@ func FixedProfiles() map[string]FixedProfile {
 			WeightFreshness:     0.00,
 			WeightMetadataBoost: 0.10,
 			PerSourceCap:        5,
+			MinScore:            0.05,
 		},
 	}
 }

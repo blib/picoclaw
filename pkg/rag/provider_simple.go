@@ -126,6 +126,14 @@ func (p *simpleProvider) LoadIndexInfo(_ context.Context) (*IndexInfo, error) {
 	return &info, nil
 }
 
+func (p *simpleProvider) LoadChunks(_ context.Context) ([]IndexedChunk, error) {
+	store, err := p.loadStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.Chunks, nil
+}
+
 func (p *simpleProvider) loadStore() (*IndexStore, error) {
 	info, err := os.Stat(p.indexFile)
 	if err != nil {
