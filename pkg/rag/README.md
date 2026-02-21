@@ -98,7 +98,7 @@ Queue helpers:
 
 ## 5. Provider model
 
-Configured by `tools.rag.index_provider`:
+Configured by `tools.rag.index`:
 
 - `simple` (default) — JSON-backed, token-count scoring, zero dependencies
 - `comet` — pure-Go BM25 + optional vector hybrid via cosine similarity
@@ -193,7 +193,7 @@ Chunker strategy in `chunker.go`:
 - headings (`# ...`) flush current chunk and update `heading_path`
 - blank lines flush current chunk
 - chunk text is bounded by size limits
-- each chunk has `ChunkLoc{heading_path,start_char,end_char}`
+- each chunk has `ChunkLoc{heading_path,start_byte,end_byte}`
 
 Text normalization (`normalizeText`):
 

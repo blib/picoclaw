@@ -109,3 +109,35 @@ func TestBuildIndexFailsForUnknownProvider(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestSearchAutoBuildOnFirstUse(t *testing.T) {
+	workspace := t.TempDir()
+	kbNotes := filepath.Join(workspace, "kb", "notes")
+	if err := os.MkdirAll(kbNotes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `---
+title: Auto Build Test
+date: 2026-02-21
+tags: [test]
+---
+
+This document tests automatic index building on first search.
+`
+	if err := os.WriteFile(filepath.Join(kbNotes, "auto.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rcfg := config.DefaultConfig().Tools.RAG
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
+
+	// Search without calling BuildIndex — should auto-build.
+	res, err := svc.Search(context.Background(), SearchRequest{Query: "automatic index building", TopK: 5})
+	if err != nil {
+		t.Fatalf("Search (auto-build) failed: %v", err)
+	}
+	if res.Full == nil || len(res.Full.Items) == 0 {
+		t.Fatalf("expected results after auto-build; notes=%v", res.Full.Notes)
+	}
+}

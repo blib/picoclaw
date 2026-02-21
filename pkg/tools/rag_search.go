@@ -20,7 +20,9 @@ func NewRAGSearchTool(workspace string, cfg config.RAGToolsConfig, providers con
 	if !cfg.Enabled {
 		return nil
 	}
-	return &RAGSearchTool{service: rag.NewService(workspace, cfg, providers)}
+	svc := rag.NewService(workspace, cfg, providers)
+	go svc.EnsureIndex(context.Background())
+	return &RAGSearchTool{service: svc}
 }
 
 // Name keeps a stable tool identifier required by prompts and registry wiring.

@@ -53,8 +53,8 @@ type Secret string
 // Value returns the plaintext secret.
 func (s Secret) Value() string { return string(s) }
 
-func (s Secret) String() string    { return "[REDACTED]" }
-func (s Secret) GoString() string  { return "Secret([REDACTED])" }
+func (s Secret) String() string   { return "[REDACTED]" }
+func (s Secret) GoString() string { return "Secret([REDACTED])" }
 func (s Secret) MarshalJSON() ([]byte, error) {
 	if s == "" {
 		return []byte(`""`), nil
@@ -268,12 +268,12 @@ type ExecConfig struct {
 
 type RAGToolsConfig struct {
 	Enabled                 bool     `json:"enabled" env:"PICOCLAW_TOOLS_RAG_ENABLED"`
-	IndexProvider           string   `json:"index_provider" env:"PICOCLAW_TOOLS_RAG_INDEX_PROVIDER"`
+	IndexProvider           string   `json:"index" env:"PICOCLAW_TOOLS_RAG_INDEX_PROVIDER"`
 	IndexRoot               string   `json:"index_root" env:"PICOCLAW_TOOLS_RAG_INDEX_ROOT"`
 	KBRoot                  string   `json:"kb_root" env:"PICOCLAW_TOOLS_RAG_KB_ROOT"`
 	AllowExternalEmbeddings bool     `json:"allow_external_embeddings" env:"PICOCLAW_TOOLS_RAG_ALLOW_EXTERNAL_EMBEDDINGS"`
-	EmbeddingProvider       string   `json:"embedding_provider" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_PROVIDER"`
-	EmbeddingModelID        string   `json:"embedding_model" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL_ID"`
+	EmbeddingProvider       string   `json:"provider" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_PROVIDER"`
+	EmbeddingModelID        string   `json:"model" env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL_ID"`
 	EmbeddingAPIBase        string   `json:"api_base" env:"PICOCLAW_TOOLS_RAG_API_BASE"`
 	EmbeddingAPIKey         Secret   `json:"api_key" env:"PICOCLAW_TOOLS_RAG_API_KEY"`
 	QueueSize               int      `json:"queue_size" env:"PICOCLAW_TOOLS_RAG_QUEUE_SIZE"`

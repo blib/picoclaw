@@ -60,7 +60,7 @@ type processOptions struct {
 
 // createToolRegistry creates a tool registry with common tools.
 // This is shared between main agent and subagents.
-func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msgBus *bus.MessageBus) *tools.ToolRegistry {
+func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msgBus *bus.MessageBus, shared ...tools.Tool) *tools.ToolRegistry {
 	registry := tools.NewToolRegistry()
 
 	// File system tools
@@ -87,8 +87,9 @@ func createToolRegistry(workspace string, restrict bool, cfg *config.Config, msg
 	}
 	registry.Register(tools.NewWebFetchTool(50000))
 
-	if ragTool := tools.NewRAGSearchTool(workspace, cfg.Tools.RAG, cfg.Providers); ragTool != nil {
-		registry.Register(ragTool)
+	// Register shared singleton tools (e.g. RAG — bbolt requires exclusive file lock)
+	for _, t := range shared {
+		registry.Register(t)
 	}
 
 	// Hardware tools (I2C, SPI) - Linux only, returns error on other platforms
@@ -117,12 +118,19 @@ func NewAgentLoop(cfg *config.Config, msgBus *bus.MessageBus, provider providers
 
 	restrict := cfg.Agents.Defaults.RestrictToWorkspace
 
+	// RAG tool is a singleton: the underlying bbolt store requires an exclusive
+	// file lock, so both agent and subagent share the same instance.
+	var sharedTools []tools.Tool
+	if ragTool := tools.NewRAGSearchTool(workspace, cfg.Tools.RAG, cfg.Providers); ragTool != nil {
+		sharedTools = append(sharedTools, ragTool)
+	}
+
 	// Create tool registry for main agent
-	toolsRegistry := createToolRegistry(workspace, restrict, cfg, msgBus)
+	toolsRegistry := createToolRegistry(workspace, restrict, cfg, msgBus, sharedTools...)
 
 	// Create subagent manager with its own tool registry
 	subagentManager := tools.NewSubagentManager(provider, cfg.Agents.Defaults.Model, workspace, msgBus)
-	subagentTools := createToolRegistry(workspace, restrict, cfg, msgBus)
+	subagentTools := createToolRegistry(workspace, restrict, cfg, msgBus, sharedTools...)
 	// Subagent doesn't need spawn/subagent tools to avoid recursion
 	subagentManager.SetTools(subagentTools)
 

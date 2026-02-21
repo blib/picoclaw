@@ -3,6 +3,7 @@ package rag
 import (
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"math"
@@ -271,4 +272,135 @@ func (s *Store) LoadVectors() ([][]float32, error) {
 
 func (s *Store) vectorsPath() string {
 	return filepath.Join(s.dir, "vectors.bin")
+}
+
+// errStopIteration is a sentinel used to break out of bbolt's ForEach early.
+var errStopIteration = errors.New("stop iteration")
+
+// ForEachChunk iterates all chunks in insertion order without accumulating
+// them in memory. The callback receives the positional index and chunk.
+func (s *Store) ForEachChunk(fn func(idx uint32, chunk IndexedChunk) error) error {
+	return s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChunks)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(k, v []byte) error {
+			idx := binary.BigEndian.Uint32(k)
+			var c IndexedChunk
+			if err := json.Unmarshal(v, &c); err != nil {
+				return err
+			}
+			return fn(idx, c)
+		})
+	})
+}
+
+// ForEachVector iterates all vectors without keeping the full [][]float32
+// in memory. Each callback receives a freshly-allocated []float32 that the
+// caller may retain. Returns nil if the vectors file doesn't exist.
+func (s *Store) ForEachVector(fn func(idx uint32, vec []float32) error) error {
+	data, err := os.ReadFile(s.vectorsPath())
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if len(data) < vecHeaderSize+vecTrailerSize {
+		return fmt.Errorf("vectors.bin too short (%d bytes)", len(data))
+	}
+	if data[0] != vecMagic[0] || data[1] != vecMagic[1] ||
+		data[2] != vecMagic[2] || data[3] != vecMagic[3] {
+		return fmt.Errorf("vectors.bin bad magic: %x", data[0:4])
+	}
+	ver := binary.LittleEndian.Uint16(data[4:6])
+	if ver != vecVersion {
+		return fmt.Errorf("vectors.bin unsupported version %d", ver)
+	}
+	n := int(binary.LittleEndian.Uint32(data[8:12]))
+	dims := int(binary.LittleEndian.Uint32(data[12:16]))
+	expected := vecHeaderSize + n*dims*4 + vecTrailerSize
+	if len(data) < expected {
+		return fmt.Errorf("vectors.bin truncated: want %d, got %d bytes", expected, len(data))
+	}
+	payloadEnd := vecHeaderSize + n*dims*4
+	stored := binary.LittleEndian.Uint32(data[payloadEnd : payloadEnd+4])
+	computed := crc32.Checksum(data[:payloadEnd], crc32.MakeTable(crc32.Castagnoli))
+	if stored != computed {
+		return fmt.Errorf("vectors.bin checksum mismatch: stored %08x, computed %08x", stored, computed)
+	}
+	off := vecHeaderSize
+	for i := 0; i < n; i++ {
+		vec := make([]float32, dims)
+		for j := range vec {
+			vec[j] = math.Float32frombits(binary.LittleEndian.Uint32(data[off : off+4]))
+			off += 4
+		}
+		if err := fn(uint32(i), vec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// LoadChunksByIndexes reads specific chunks by their positional indexes
+// in a single bbolt transaction (batch read for search hit resolution).
+func (s *Store) LoadChunksByIndexes(ids []uint32) (map[uint32]IndexedChunk, error) {
+	result := make(map[uint32]IndexedChunk, len(ids))
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChunks)
+		if b == nil {
+			return nil
+		}
+		key := make([]byte, 4)
+		for _, id := range ids {
+			binary.BigEndian.PutUint32(key, id)
+			v := b.Get(key)
+			if v == nil {
+				continue
+			}
+			var c IndexedChunk
+			if err := json.Unmarshal(v, &c); err != nil {
+				return fmt.Errorf("unmarshal chunk %d: %w", id, err)
+			}
+			result[id] = c
+		}
+		return nil
+	})
+	return result, err
+}
+
+// LoadChunkBySourceAndOrdinal finds a chunk by source path and ordinal.
+// Scans all chunks via bbolt cursor — O(n) but avoids keeping chunks in memory.
+func (s *Store) LoadChunkBySourceAndOrdinal(sourcePath string, ordinal int) (*IndexedChunk, error) {
+	norm := filepath.ToSlash(sourcePath)
+	var found *IndexedChunk
+	err := s.db.View(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketChunks)
+		if b == nil {
+			return nil
+		}
+		return b.ForEach(func(_, v []byte) error {
+			var c IndexedChunk
+			if err := json.Unmarshal(v, &c); err != nil {
+				return err
+			}
+			if c.SourcePath == norm && c.ChunkOrdinal == ordinal {
+				found = &c
+				return errStopIteration
+			}
+			return nil
+		})
+	})
+	if err == errStopIteration {
+		err = nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if found == nil {
+		return nil, os.ErrNotExist
+	}
+	return found, nil
 }

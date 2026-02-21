@@ -129,12 +129,12 @@ ResearchRAG is a local retrieval layer over files in `workspace/kb`.
 | Config | Type | Default | Description |
 |--------|------|---------|-------------|
 | `enabled` | bool | true | Enable ResearchRAG |
-| `index_provider` | string | `simple` | Retrieval backend (`simple` or `bleve`) |
+| `index` | string | `simple` | Retrieval backend (`simple` or `bleve`) |
 | `index_root` | string | `workspace/.rag` | Index storage root |
 | `kb_root` | string | `workspace/kb` | Knowledge base root |
 | `allow_external_embeddings` | bool | false | Allow semantic mode with external embeddings |
-| `embedding_provider` | string | `openai` | Embedding provider id |
-| `embedding_model_id` | string | `text-embedding-3-small` | Embedding model id |
+| `provider` | string | `openai` | Embedding provider id |
+| `model` | string | `text-embedding-3-small` | Embedding model id |
 | `queue_size` | int | 16 | Maximum queued search requests |
 | `concurrency` | int | 3 | Concurrent search workers |
 | `chunk_soft_bytes` | int | 4096 | Preferred chunk size |
@@ -145,5 +145,5 @@ ResearchRAG is a local retrieval layer over files in `workspace/kb`.
 | `default_profile_id` | string | `default_research` | Fixed profile used when omitted |
 
 Notes:
-- `index_provider=simple` works in default build.
-- `index_provider=bleve` requires building PicoClaw with `-tags bleve`.
+- `index=simple` works in default build.
+- `index=bleve` requires building PicoClaw with `-tags bleve`.
