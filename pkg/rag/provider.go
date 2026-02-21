@@ -25,7 +25,6 @@ type ProviderHit struct {
 	Chunk         IndexedChunk
 	LexicalScore  float64
 	SemanticScore float64
-	FusedScore    float64 // set when backend fuses lexical+semantic (e.g. RRF); service skips blend
 }
 
 // ProviderSearchResult bundles candidates with index metadata to keep responses

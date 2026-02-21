@@ -67,6 +67,12 @@ func GetLevel() LogLevel {
 	return currentLevel
 }
 
+// IsDebug returns true when debug-level messages are enabled.
+// Use to guard expensive formatting before calling Debug().
+func IsDebug() bool {
+	return GetLevel() <= DEBUG
+}
+
 func EnableFileLogging(filePath string) error {
 	mu.Lock()
 	defer mu.Unlock()

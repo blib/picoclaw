@@ -46,8 +46,8 @@ Tasks:
   - `index_root`
   - `kb_root`
   - `allow_external_embeddings`
-  - `embedding_provider`
-  - `embedding_model_id`
+  - `embedding_provider` → `provider`
+  - `embedding_model_id` → `model`
   - `queue_size`
   - `concurrency`
   - `chunk_soft_bytes`

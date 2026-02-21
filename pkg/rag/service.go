@@ -13,9 +13,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sipeed/picoclaw/pkg/config"
+	"github.com/sipeed/picoclaw/pkg/logger"
 )
 
 var (
@@ -41,6 +43,8 @@ type Service struct {
 	// precomputed from cfg.DenylistPaths at construction
 	denyExact    map[string]struct{} // lowered exact filenames
 	denyPrefixes []string            // lowered directory prefixes (end with /)
+
+	indexChecked atomic.Bool // true after first ensureIndex confirms or builds
 }
 
 // ServiceOption configures optional Service dependencies.
@@ -165,10 +169,17 @@ func (s *Service) BuildIndex(ctx context.Context) (*IndexInfo, error) {
 		return nil, err
 	}
 
+	logger.Info(fmt.Sprintf("rag: building index from kb_root=%s", s.kbRoot))
+
 	// Chunking is stateless IO — no concurrency slot needed.
 	chunks, info, err := s.buildChunksAndInfo(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	logger.Info(fmt.Sprintf("rag: indexed %d chunks from %d documents", info.TotalChunks, info.TotalDocuments))
+	if len(info.Warnings) > 0 {
+		logger.Warn(fmt.Sprintf("rag: build warnings: %v", info.Warnings))
 	}
 
 	// Only the provider mutation needs the semaphore slot.
@@ -376,9 +387,50 @@ func (s *Service) endQueued() {
 	s.mu.Unlock()
 }
 
+// EnsureIndex builds the index on first use if no index exists on disk or the
+// existing index is dirty. Safe to call multiple times — only the first call
+// does real work. Can be called from a background goroutine at startup so the
+// index is ready by the time the first search arrives.
+func (s *Service) EnsureIndex(ctx context.Context) {
+	if s.indexChecked.Load() {
+		return
+	}
+	provider, err := s.providerOrErr()
+	if err != nil {
+		return
+	}
+
+	needsBuild := false
+	info, _ := provider.LoadIndexInfo(ctx)
+	if info == nil {
+		logger.Info("rag: no existing index found, will build")
+		needsBuild = true
+	} else if info.TotalChunks == 0 {
+		logger.Info("rag: existing index is empty, will rebuild")
+		needsBuild = true
+	} else if fp, ok := provider.(FlushableProvider); ok && fp.IsDirty() {
+		logger.Info("rag: index dirty, will rebuild")
+		needsBuild = true
+	}
+
+	if !needsBuild {
+		logger.Info(fmt.Sprintf("rag: existing index OK (version=%s, chunks=%d)", info.IndexVersion, info.TotalChunks))
+		s.indexChecked.Store(true)
+		return
+	}
+
+	logger.Info("rag: auto-building index on first use")
+	if _, err := s.BuildIndex(ctx); err != nil {
+		logger.Warn(fmt.Sprintf("rag: auto-build failed: %v", err))
+		return
+	}
+	s.indexChecked.Store(true)
+}
+
 // Search applies profile-constrained retrieval and ranking to return evidence
 // with predictable policy behavior (privacy filters, risk downrank, source caps).
 func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult, error) {
+	s.EnsureIndex(ctx)
 	if err := s.beginQueued(ctx); err != nil {
 		return nil, err
 	}
@@ -456,7 +508,6 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		Chunk     IndexedChunk
 		RawBM25   float64
 		RawCosine float64
-		RawFused  float64
 		FreshNorm float64
 		MetaBoost float64
 		Score     float64
@@ -469,7 +520,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		if !passesFilters(chunk, req.Filters) {
 			continue
 		}
-		if hit.LexicalScore <= 0 && hit.SemanticScore <= 0 && hit.FusedScore <= 0 {
+		if hit.LexicalScore <= 0 && hit.SemanticScore <= 0 {
 			continue
 		}
 		fresh := freshnessNorm(chunk.Date, refTime)
@@ -478,7 +529,6 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 			Chunk:     chunk,
 			RawBM25:   hit.LexicalScore,
 			RawCosine: hit.SemanticScore,
-			RawFused:  hit.FusedScore,
 			FreshNorm: fresh,
 			MetaBoost: boost,
 		})
@@ -497,24 +547,14 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		return &SearchResult{Full: empty, LLM: compact}, nil
 	}
 
-	// Determine whether candidates carry pre-fused scores (e.g. RRF from
-	// hybrid provider) or separate lexical/semantic components.
-	hasFused := len(cands) > 0 && cands[0].RawFused > 0
-
 	sort.SliceStable(cands, func(i, j int) bool {
-		primary := func(c cand) float64 {
-			if hasFused {
-				return c.RawFused
-			}
-			return c.RawBM25
-		}
-		if primary(cands[i]) == primary(cands[j]) {
+		if cands[i].RawBM25 == cands[j].RawBM25 {
 			if cands[i].Chunk.SourcePath == cands[j].Chunk.SourcePath {
 				return cands[i].Chunk.ChunkOrdinal < cands[j].Chunk.ChunkOrdinal
 			}
 			return cands[i].Chunk.SourcePath < cands[j].Chunk.SourcePath
 		}
-		return primary(cands[i]) > primary(cands[j])
+		return cands[i].RawBM25 > cands[j].RawBM25
 	})
 
 	topN := profile.BM25TopN
@@ -525,7 +565,6 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 
 	minBM, maxBM := cands[0].RawBM25, cands[0].RawBM25
 	minCos, maxCos := cands[0].RawCosine, cands[0].RawCosine
-	minFused, maxFused := cands[0].RawFused, cands[0].RawFused
 	for _, c := range cands {
 		if c.RawBM25 < minBM {
 			minBM = c.RawBM25
@@ -539,50 +578,32 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		if c.RawCosine > maxCos {
 			maxCos = c.RawCosine
 		}
-		if c.RawFused < minFused {
-			minFused = c.RawFused
-		}
-		if c.RawFused > maxFused {
-			maxFused = c.RawFused
-		}
 	}
 
 	for i := range cands {
-		var bmNorm, cosNorm float64
+		bmNorm := 1.0
+		if maxBM > minBM {
+			bmNorm = (cands[i].RawBM25 - minBM) / (maxBM - minBM)
+		}
 
-		if hasFused {
-			// Provider already fused lexical+semantic (e.g. RRF). Use
-			// the fused score as the combined retrieval signal, spreading
-			// it across BM25+Cosine weights so profile math still applies.
-			fusedNorm := 1.0
-			if maxFused > minFused {
-				fusedNorm = (cands[i].RawFused - minFused) / (maxFused - minFused)
-			}
-			bmNorm = fusedNorm
-			cosNorm = fusedNorm
-		} else {
-			bmNorm = 1.0
-			if maxBM > minBM {
-				bmNorm = (cands[i].RawBM25 - minBM) / (maxBM - minBM)
-			}
-
-			cosNorm = 0.0
-			if semanticAvailable && mode != ModeKeywordOnly {
-				cosNorm = 1.0
-				if maxCos > minCos {
-					cosNorm = (cands[i].RawCosine - minCos) / (maxCos - minCos)
-				}
-			}
-
-			if mode == ModeSemanticOnly {
-				bmNorm = 0.0
-			}
-			if mode == ModeKeywordOnly {
-				cosNorm = 0.0
+		cosNorm := 0.0
+		if semanticAvailable && mode != ModeKeywordOnly {
+			cosNorm = 1.0
+			if maxCos > minCos {
+				cosNorm = (cands[i].RawCosine - minCos) / (maxCos - minCos)
 			}
 		}
 
-		final := profile.WeightBM25*bmNorm + profile.WeightCosine*cosNorm + profile.WeightFreshness*cands[i].FreshNorm + profile.WeightMetadataBoost*cands[i].MetaBoost
+		if mode == ModeSemanticOnly {
+			bmNorm = 0.0
+		}
+		if mode == ModeKeywordOnly {
+			cosNorm = 0.0
+		}
+
+		final := profile.WeightBM25*bmNorm + profile.WeightCosine*cosNorm +
+			profile.WeightFreshness*cands[i].FreshNorm +
+			profile.WeightMetadataBoost*cands[i].MetaBoost
 		if final < 0 {
 			final = 0
 		}
@@ -610,6 +631,21 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		}
 		return cands[i].Score > cands[j].Score
 	})
+
+	if logger.IsDebug() {
+		logger.Debug(fmt.Sprintf("rag search: query=%q mode=%s candidates=%d", query, mode, len(cands)))
+		for i, c := range cands {
+			if i >= 10 {
+				logger.Debug(fmt.Sprintf("  ... and %d more", len(cands)-10))
+				break
+			}
+			logger.Debug(fmt.Sprintf("  #%d %s#%d bm25=%.4f cos=%.4f fresh=%.2f meta=%.2f final=%.4f snippet=%q",
+				i+1, c.Chunk.SourcePath, c.Chunk.ChunkOrdinal,
+				c.Breakdown.BM25Norm, c.Breakdown.CosineNorm,
+				c.Breakdown.FreshnessNorm, c.Breakdown.MetadataBoost,
+				c.Score, safeSnippet(c.Chunk.Text, 80)))
+		}
+	}
 
 	perSource := make(map[string]int)
 	items := make([]EvidenceItemFull, 0, topK)
