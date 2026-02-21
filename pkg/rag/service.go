@@ -34,6 +34,7 @@ type Service struct {
 	kbRoot    string
 	provider  IndexProvider
 	embedder  Embedder
+	chunker   Chunker
 
 	providerInitErr error
 	sem             chan struct{}
@@ -54,6 +55,12 @@ type ServiceOption func(*Service)
 // with a fake embedder that doesn't require API keys.
 func WithEmbedder(e Embedder) ServiceOption {
 	return func(s *Service) { s.embedder = e }
+}
+
+// WithChunker overrides the default markdown chunker. Used by the eval
+// framework to compare different chunking strategies.
+func WithChunker(c Chunker) ServiceOption {
+	return func(s *Service) { s.chunker = c }
 }
 
 // Close releases resources held by the service and its provider.
@@ -134,6 +141,15 @@ func resolveRAGPath(workspace, value string) string {
 		return filepath.Join(workspace, strings.TrimPrefix(value, "workspace/"))
 	}
 	return filepath.Join(workspace, value)
+}
+
+// chunkContent uses the configured chunker or falls back to the default
+// markdown chunker with the service's soft/hard byte limits.
+func (s *Service) chunkContent(body string) []ChunkLocAndText {
+	if s.chunker != nil {
+		return s.chunker.Chunk(body)
+	}
+	return splitMarkdownChunks(body, s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes)
 }
 
 // RetryAfterSeconds exposes a deterministic backoff hint so callers can retry
@@ -286,7 +302,7 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 			effectiveDate = meta.EffectiveDate
 		}
 
-		chunks := splitMarkdownChunks(body, s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes)
+		chunks := s.chunkContent(body)
 		if len(chunks) > s.cfg.MaxChunksPerDocument {
 			chunks = chunks[:s.cfg.MaxChunksPerDocument]
 			warnings = append(warnings, fmt.Sprintf("max_chunks_per_document:%s", relToKB))

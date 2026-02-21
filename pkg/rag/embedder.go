@@ -30,6 +30,20 @@ type Embedder interface {
 	Dims() int
 }
 
+// EmbedderUsage holds accumulated usage statistics from embedding calls.
+type EmbedderUsage struct {
+	TotalCalls  int `json:"total_calls"`
+	TotalTexts  int `json:"total_texts"`
+	TotalTokens int `json:"total_tokens"` // as reported by the API; 0 if unavailable
+}
+
+// UsageTracker is an optional interface that embedders can implement
+// to report accumulated usage statistics (token counts, call counts).
+type UsageTracker interface {
+	Usage() EmbedderUsage
+	ResetUsage()
+}
+
 // embeddingProviderInfo holds defaults for each supported provider.
 type embeddingProviderInfo struct {
 	BaseURL      string
@@ -148,6 +162,12 @@ type httpEmbedder struct {
 	client   *http.Client
 	dimsOnce sync.Once
 	dims     int // set once from provider config or first API response
+
+	// Usage tracking.
+	mu          sync.Mutex
+	usageCalls  int
+	usageTexts  int
+	usageTokens int
 }
 
 // ollamaBase returns the Ollama native API base (without /v1 suffix).
@@ -278,7 +298,34 @@ func (e *httpEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 		e.dimsOnce.Do(func() { e.dims = len(vecs[0]) })
 	}
 
+	// Accumulate usage stats.
+	e.mu.Lock()
+	e.usageCalls++
+	e.usageTexts += len(texts)
+	e.usageTokens += result.Usage.TotalTokens
+	e.mu.Unlock()
+
 	return vecs, nil
+}
+
+// Usage returns accumulated embedding usage statistics.
+func (e *httpEmbedder) Usage() EmbedderUsage {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return EmbedderUsage{
+		TotalCalls:  e.usageCalls,
+		TotalTexts:  e.usageTexts,
+		TotalTokens: e.usageTokens,
+	}
+}
+
+// ResetUsage clears accumulated usage statistics.
+func (e *httpEmbedder) ResetUsage() {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.usageCalls = 0
+	e.usageTexts = 0
+	e.usageTokens = 0
 }
 
 func (e *httpEmbedder) Dims() int {

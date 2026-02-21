@@ -1,4 +1,4 @@
-.PHONY: all build install uninstall clean help test
+.PHONY: all build install uninstall clean help test build-rageval
 
 # Build variables
 BINARY_NAME=picoclaw
@@ -92,6 +92,13 @@ build-all: generate
 	GOOS=windows GOARCH=amd64 $(GO) build $(LDFLAGS) -o $(BUILD_DIR)/$(BINARY_NAME)-windows-amd64.exe ./$(CMD_DIR)
 	@echo "All builds complete"
 
+## build-rageval: Build the rageval evaluation binary
+build-rageval:
+	@echo "Building rageval..."
+	@mkdir -p $(BUILD_DIR)
+	@$(GO) build $(GOFLAGS) -o $(BUILD_DIR)/rageval ./cmd/rageval
+	@echo "Build complete: $(BUILD_DIR)/rageval"
+
 ## install: Install picoclaw to system and copy builtin skills
 install: build
 	@echo "Installing $(BINARY_NAME)..."
@@ -120,6 +127,8 @@ uninstall-all:
 clean:
 	@echo "Cleaning build artifacts..."
 	@rm -rf $(BUILD_DIR)
+	@rm -rf .rageval
+	@rm -f rageval-report.*
 	@echo "Clean complete"
 
 ## vet: Run go vet for static analysis

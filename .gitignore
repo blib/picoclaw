@@ -45,3 +45,7 @@ tasks/
 
 # Added by goreleaser init:
 dist/
+
+# RAG evaluation
+.rageval/
+rageval-report.*
