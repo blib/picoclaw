@@ -97,21 +97,6 @@ func (t *RAGSearchTool) Parameters() map[string]interface{} {
 						"enum":        []string{"any", "all"},
 						"description": "Match any or all tags (default: any)",
 					},
-					"project": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Filter by project name",
-					},
-					"doc_type": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Filter by document type (e.g. note, decision, template)",
-					},
-					"confidentiality_allow": map[string]interface{}{
-						"type":        "array",
-						"items":       map[string]interface{}{"type": "string"},
-						"description": "Allowed confidentiality levels (e.g. public, internal)",
-					},
 					"date_from": map[string]interface{}{
 						"type":        "string",
 						"description": "Include docs dated on or after (YYYY-MM-DD)",
@@ -119,10 +104,6 @@ func (t *RAGSearchTool) Parameters() map[string]interface{} {
 					"date_to": map[string]interface{}{
 						"type":        "string",
 						"description": "Include docs dated on or before (YYYY-MM-DD)",
-					},
-					"allow_restricted": map[string]interface{}{
-						"type":        "boolean",
-						"description": "Include restricted/confidential documents (default: false)",
 					},
 				},
 			},
@@ -185,14 +166,8 @@ func parseRAGFilters(raw map[string]interface{}) rag.SearchFilters {
 	f := rag.SearchFilters{}
 	f.Tags = toStringSlice(raw["tags"])
 	f.TagMode, _ = raw["tag_mode"].(string)
-	f.Project = toStringSlice(raw["project"])
-	f.DocType = toStringSlice(raw["doc_type"])
-	f.ConfidentialityAllow = toStringSlice(raw["confidentiality_allow"])
 	f.DateFrom, _ = raw["date_from"].(string)
 	f.DateTo, _ = raw["date_to"].(string)
-	if v, ok := raw["allow_restricted"].(bool); ok {
-		f.AllowRestricted = v
-	}
 	return f
 }
 

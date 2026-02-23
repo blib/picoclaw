@@ -11,14 +11,10 @@ const (
 )
 
 type SearchFilters struct {
-	Tags                 []string `json:"tags,omitempty"`
-	TagMode              string   `json:"tag_mode,omitempty"`
-	Project              []string `json:"project,omitempty"`
-	DocType              []string `json:"doc_type,omitempty"`
-	DateFrom             string   `json:"date_from,omitempty"`
-	DateTo               string   `json:"date_to,omitempty"`
-	ConfidentialityAllow []string `json:"confidentiality_allow,omitempty"`
-	AllowRestricted      bool     `json:"allow_restricted,omitempty"`
+	Tags     []string `json:"tags,omitempty"`
+	TagMode  string   `json:"tag_mode,omitempty"`
+	DateFrom string   `json:"date_from,omitempty"`
+	DateTo   string   `json:"date_to,omitempty"`
 }
 
 type SearchRequest struct {
@@ -46,7 +42,6 @@ type ScoreBreakdown struct {
 	BM25Norm      float64 `json:"bm25_norm,omitempty"`
 	CosineNorm    float64 `json:"cosine_norm,omitempty"`
 	FreshnessNorm float64 `json:"freshness_norm,omitempty"`
-	MetadataBoost float64 `json:"metadata_boost,omitempty"`
 	FinalScore    float64 `json:"final_score"`
 }
 
@@ -122,10 +117,7 @@ type IndexedChunk struct {
 	ParagraphID     string   `json:"paragraph_id"`
 	Title           string   `json:"title,omitempty"`
 	Date            string   `json:"date,omitempty"`
-	Project         string   `json:"project,omitempty"`
 	Tags            []string `json:"tags,omitempty"`
-	Confidentiality string   `json:"confidentiality,omitempty"`
-	DocType         string   `json:"doc_type,omitempty"`
 	Text            string   `json:"text"`
 	Flags           []string `json:"flags,omitempty"`
 	RiskScore       float64  `json:"risk_score,omitempty"`
@@ -142,7 +134,6 @@ type IndexStore struct {
 type DocumentSummary struct {
 	SourcePath string   `json:"source_path"`
 	Title      string   `json:"title,omitempty"`
-	DocType    string   `json:"doc_type,omitempty"`
 	Tags       []string `json:"tags,omitempty"`
 	Chunks     int      `json:"chunks"`
 	TotalBytes int      `json:"total_bytes"`
@@ -156,27 +147,23 @@ type ChunkResult struct {
 }
 
 type docMeta struct {
-	Title           string
-	Date            string
-	EffectiveDate   string
-	Project         string
-	Tags            []string
-	Source          string
-	Confidentiality string
+	Title         string
+	Date          string
+	EffectiveDate string
+	Tags          []string
+	Source        string
 }
 
 type FixedProfile struct {
-	ID                  string
-	DefaultMode         SearchMode
-	BM25TopN            int
-	SemanticTopN        int
-	WeightBM25          float64
-	WeightCosine        float64
-	WeightFreshness     float64
-	WeightMetadataBoost float64
-	PerSourceCap        int
-	PreferNotesPolicy   bool
-	MinScore            float64 // results below this final score are dropped; 0 = no cutoff
+	ID              string
+	DefaultMode     SearchMode
+	BM25TopN        int
+	SemanticTopN    int
+	WeightBM25      float64
+	WeightCosine    float64
+	WeightFreshness float64
+	PerSourceCap    int
+	MinScore        float64
 }
 
 func parseISODate(value string) (time.Time, bool) {

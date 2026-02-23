@@ -194,61 +194,7 @@ Rest of the meeting was about sprint planning and velocity tracking.
 	}
 }
 
-func TestEvalRestrictedExcluded(t *testing.T) {
-	svc := buildTestKB(t, map[string]string{
-		"public.md": `---
-title: Public Roadmap
-date: 2026-02-15
-confidentiality: internal
----
 
-Product roadmap for Q2: new search features and performance improvements.
-`,
-		"secret.md": `---
-title: Incident Report
-date: 2026-02-15
-confidentiality: restricted
----
-
-Critical security incident: unauthorized access to search index.
-Root cause was missing authentication on internal endpoint.
-`,
-	})
-
-	res := searchMust(t, svc, "security incident unauthorized access", 10)
-	for _, item := range res.Full.Items {
-		if strings.HasSuffix(item.SourcePath, "secret.md") {
-			t.Errorf("restricted document leaked into results: %s", item.SourcePath)
-		}
-	}
-}
-
-func TestEvalRestrictedIncludedWhenAllowed(t *testing.T) {
-	svc := buildTestKB(t, map[string]string{
-		"secret.md": `---
-title: Incident Report
-date: 2026-02-15
-confidentiality: restricted
----
-
-Critical security incident with detailed root cause analysis.
-`,
-	})
-
-	res, err := svc.Search(context.Background(), SearchRequest{
-		Query: "security incident",
-		TopK:  10,
-		Filters: SearchFilters{
-			AllowRestricted: true,
-		},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Full.Items) == 0 {
-		t.Error("expected restricted doc in results when AllowRestricted=true")
-	}
-}
 
 func TestEvalTagFilter(t *testing.T) {
 	svc := buildTestKB(t, map[string]string{
@@ -415,17 +361,7 @@ func TestFreshnessNormDecay(t *testing.T) {
 	}
 }
 
-func TestMetadataBoostNotesPolicy(t *testing.T) {
-	profile := FixedProfile{PreferNotesPolicy: true}
-	note := IndexedChunk{DocType: "note"}
-	paper := IndexedChunk{DocType: "paper"}
 
-	noteBoost := metadataBoost(profile, note)
-	paperBoost := metadataBoost(profile, paper)
-	if noteBoost <= paperBoost {
-		t.Errorf("note boost (%f) should exceed paper boost (%f) with PreferNotesPolicy", noteBoost, paperBoost)
-	}
-}
 
 func TestDetectInjectionRisk(t *testing.T) {
 	clean := "Normal document about software architecture."
@@ -443,8 +379,7 @@ func TestDetectInjectionRisk(t *testing.T) {
 
 func TestPassesFiltersDateRange(t *testing.T) {
 	chunk := IndexedChunk{
-		Date:            "2026-02-15",
-		Confidentiality: "internal",
+		Date: "2026-02-15",
 	}
 
 	if !passesFilters(chunk, SearchFilters{DateFrom: "2026-02-01", DateTo: "2026-02-28"}) {
@@ -494,9 +429,6 @@ Body text here.`
 	}
 	if len(meta.Tags) != 2 || meta.Tags[0] != "infra" || meta.Tags[1] != "cache" {
 		t.Errorf("tags = %v", meta.Tags)
-	}
-	if meta.Confidentiality != "internal" {
-		t.Errorf("confidentiality = %q", meta.Confidentiality)
 	}
 	if !strings.Contains(body, "Body text") {
 		t.Errorf("body should contain text after frontmatter, got %q", body)

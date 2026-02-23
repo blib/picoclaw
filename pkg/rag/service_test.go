@@ -59,42 +59,6 @@ We discussed caching strategy and invalidation policy for api responses.
 	}
 }
 
-func TestRestrictedFilterDefaultExcludesRestricted(t *testing.T) {
-	workspace := t.TempDir()
-	kbNotes := filepath.Join(workspace, "kb", "notes")
-	if err := os.MkdirAll(kbNotes, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	content := `---
-title: Secret Note
-date: 2026-02-10
-tags: [secret]
-source: internal
-confidentiality: restricted
----
-
-confidential incident details.
-`
-	if err := os.WriteFile(filepath.Join(kbNotes, "restricted.md"), []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	rcfg := config.DefaultConfig().Tools.RAG
-	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
-	if _, err := svc.BuildIndex(context.Background()); err != nil {
-		t.Fatalf("BuildIndex failed: %v", err)
-	}
-
-	res, err := svc.Search(context.Background(), SearchRequest{Query: "incident details", TopK: 5})
-	if err != nil {
-		t.Fatalf("Search failed: %v", err)
-	}
-	if len(res.Full.Items) != 0 {
-		t.Fatalf("expected restricted docs to be excluded by default")
-	}
-}
-
 func TestBuildIndexFailsForUnknownProvider(t *testing.T) {
 	workspace := t.TempDir()
 	rcfg := config.DefaultConfig().Tools.RAG

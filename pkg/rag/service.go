@@ -300,12 +300,8 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 		for _, w := range parseWarnings {
 			warnings = append(warnings, fmt.Sprintf("%s:%s", relToKB, w))
 		}
-		if meta.Confidentiality == "" {
-			meta.Confidentiality = "internal"
-		}
 
 		docVersion := sha256B64(data)
-		docType := classifyDocType(relToKB)
 		effectiveDate := meta.Date
 		if meta.EffectiveDate != "" {
 			effectiveDate = meta.EffectiveDate
@@ -343,10 +339,7 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 				ParagraphID:     sha256B64([]byte(relToKB + "\n" + norm)),
 				Title:           meta.Title,
 				Date:            effectiveDate,
-				Project:         strings.ToLower(strings.TrimSpace(meta.Project)),
 				Tags:            normalizeTags(meta.Tags),
-				Confidentiality: strings.ToLower(strings.TrimSpace(meta.Confidentiality)),
-				DocType:         docType,
 				Text:            norm,
 				Flags:           flags,
 				RiskScore:       risk,
@@ -550,7 +543,6 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		RawBM25   float64
 		RawCosine float64
 		FreshNorm float64
-		MetaBoost float64
 		Score     float64
 		Breakdown ScoreBreakdown
 	}
@@ -565,13 +557,11 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 			continue
 		}
 		fresh := freshnessNorm(chunk.Date, refTime)
-		boost := metadataBoost(profile, chunk)
 		cands = append(cands, cand{
 			Chunk:     chunk,
 			RawBM25:   hit.LexicalScore,
 			RawCosine: hit.SemanticScore,
 			FreshNorm: fresh,
-			MetaBoost: boost,
 		})
 	}
 
@@ -643,8 +633,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 		}
 
 		final := profile.WeightBM25*bmNorm + profile.WeightCosine*cosNorm +
-			profile.WeightFreshness*cands[i].FreshNorm +
-			profile.WeightMetadataBoost*cands[i].MetaBoost
+			profile.WeightFreshness*cands[i].FreshNorm
 		if final < 0 {
 			final = 0
 		}
@@ -658,7 +647,6 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 			BM25Norm:      bmNorm,
 			CosineNorm:    cosNorm,
 			FreshnessNorm: cands[i].FreshNorm,
-			MetadataBoost: cands[i].MetaBoost,
 			FinalScore:    final,
 		}
 	}
@@ -716,10 +704,10 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 				logger.Debug(fmt.Sprintf("  ... and %d more", len(cands)-10))
 				break
 			}
-			logger.Debug(fmt.Sprintf("  #%d %s#%d bm25=%.4f cos=%.4f fresh=%.2f meta=%.2f final=%.4f snippet=%q",
+			logger.Debug(fmt.Sprintf("  #%d %s#%d bm25=%.4f cos=%.4f fresh=%.2f final=%.4f text=%q",
 				i+1, c.Chunk.SourcePath, c.Chunk.ChunkOrdinal,
 				c.Breakdown.BM25Norm, c.Breakdown.CosineNorm,
-				c.Breakdown.FreshnessNorm, c.Breakdown.MetadataBoost,
+				c.Breakdown.FreshnessNorm,
 				c.Score, safeSnippet(c.Chunk.Text, 80)))
 		}
 	}
@@ -879,7 +867,6 @@ func (s *Service) ListDocuments(ctx context.Context) ([]DocumentSummary, error) 
 		chunks    int
 		totalSize int
 		title     string
-		docType   string
 		tags      map[string]struct{}
 	}
 	order := make([]string, 0)
@@ -895,9 +882,6 @@ func (s *Service) ListDocuments(ctx context.Context) ([]DocumentSummary, error) 
 		acc.totalSize += len(ch.Text)
 		if acc.title == "" && ch.Title != "" {
 			acc.title = ch.Title
-		}
-		if acc.docType == "" && ch.DocType != "" {
-			acc.docType = ch.DocType
 		}
 		for _, t := range ch.Tags {
 			acc.tags[t] = struct{}{}
@@ -915,7 +899,6 @@ func (s *Service) ListDocuments(ctx context.Context) ([]DocumentSummary, error) 
 		result = append(result, DocumentSummary{
 			SourcePath: acc.path,
 			Title:      acc.title,
-			DocType:    acc.docType,
 			Tags:       tags,
 			Chunks:     acc.chunks,
 			TotalBytes: acc.totalSize,
@@ -925,60 +908,10 @@ func (s *Service) ListDocuments(ctx context.Context) ([]DocumentSummary, error) 
 }
 
 func validateFilters(filters SearchFilters) error {
-	if !filters.AllowRestricted {
-		for _, c := range filters.ConfidentialityAllow {
-			if strings.EqualFold(c, "restricted") {
-				return fmt.Errorf("restricted cannot be requested when allow_restricted=false")
-			}
-		}
-	}
 	return nil
 }
 
 func passesFilters(chunk IndexedChunk, filters SearchFilters) bool {
-	if !filters.AllowRestricted && strings.EqualFold(chunk.Confidentiality, "restricted") {
-		return false
-	}
-
-	if len(filters.ConfidentialityAllow) > 0 {
-		ok := false
-		for _, c := range filters.ConfidentialityAllow {
-			if strings.EqualFold(strings.TrimSpace(c), chunk.Confidentiality) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-
-	if len(filters.DocType) > 0 {
-		ok := false
-		for _, d := range filters.DocType {
-			if strings.EqualFold(strings.TrimSpace(d), chunk.DocType) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-
-	if len(filters.Project) > 0 {
-		ok := false
-		for _, p := range filters.Project {
-			if strings.EqualFold(strings.TrimSpace(p), chunk.Project) {
-				ok = true
-				break
-			}
-		}
-		if !ok {
-			return false
-		}
-	}
-
 	if len(filters.Tags) > 0 {
 		if strings.EqualFold(filters.TagMode, "all") {
 			for _, tag := range filters.Tags {
@@ -1070,35 +1003,6 @@ func freshnessNorm(date string, refTime time.Time) float64 {
 	return math.Exp(-math.Ln2 * ageDays / halfLife)
 }
 
-func metadataBoost(profile FixedProfile, chunk IndexedChunk) float64 {
-	boost := 0.0
-	if profile.PreferNotesPolicy && (chunk.DocType == "note" || chunk.DocType == "policy") {
-		boost += 1.0
-	}
-	if profile.ID == "templates_lookup" && chunk.DocType == "template" {
-		boost += 1.0
-	}
-	return boost
-}
-
-func classifyDocType(relPath string) string {
-	relPath = strings.ToLower(filepath.ToSlash(relPath))
-	switch {
-	case strings.HasPrefix(relPath, "notes/"):
-		return "note"
-	case strings.HasPrefix(relPath, "papers/"):
-		return "paper"
-	case strings.HasPrefix(relPath, "templates/"):
-		return "template"
-	case strings.HasSuffix(relPath, "policy.md"):
-		return "policy"
-	case strings.HasSuffix(relPath, "glossary.md"):
-		return "glossary"
-	default:
-		return "note"
-	}
-}
-
 func parseFrontmatter(content string) (docMeta, string, []string) {
 	meta := docMeta{}
 	warnings := make([]string, 0)
@@ -1144,11 +1048,9 @@ func parseFrontmatter(content string) (docMeta, string, []string) {
 		case "effective_date":
 			meta.EffectiveDate = value
 		case "project":
-			meta.Project = value
-		case "source":
-			meta.Source = value
+			// ignored (reserved for future use)
 		case "confidentiality":
-			meta.Confidentiality = strings.ToLower(value)
+			// ignored (reserved for future use)
 		case "tags":
 			if value == "" {
 				inTags = true
