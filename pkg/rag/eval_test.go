@@ -388,8 +388,8 @@ Content about distributed systems replication protocols.
 		if !strings.Contains(item.Ref, "#") {
 			t.Errorf("LLM ref should contain '#': %s", item.Ref)
 		}
-		if item.Snippet == "" {
-			t.Error("LLM item has empty snippet")
+		if item.Text == "" {
+			t.Error("LLM item has empty text")
 		}
 	}
 }

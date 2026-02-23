@@ -315,6 +315,13 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 
 func (al *AgentLoop) Stop() {
 	al.running.Store(false)
+
+	// Shut down tools that hold background resources (e.g. RAG watcher).
+	for _, t := range al.tools.All() {
+		if s, ok := t.(interface{ Stop() }); ok {
+			s.Stop()
+		}
+	}
 }
 
 func (al *AgentLoop) RegisterTool(tool tools.Tool) {

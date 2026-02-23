@@ -348,7 +348,6 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 				Confidentiality: strings.ToLower(strings.TrimSpace(meta.Confidentiality)),
 				DocType:         docType,
 				Text:            norm,
-				Snippet:         safeSnippet(norm, 600),
 				Flags:           flags,
 				RiskScore:       risk,
 				ParentOrdinal:   parentOrdinal,
@@ -745,7 +744,7 @@ func (s *Service) Search(ctx context.Context, req SearchRequest) (*SearchResult,
 			DocumentVersion: c.Chunk.DocumentVersion,
 			Title:           c.Chunk.Title,
 			Date:            c.Chunk.Date,
-			Snippet:         c.Chunk.Snippet,
+			Text:            c.Chunk.Text,
 			Score:           c.Score,
 			ScoreBreakdown:  c.Breakdown,
 			Flags:           c.Chunk.Flags,
@@ -805,9 +804,9 @@ func toLLMCompact(query, profileID string, items []EvidenceItemFull, notes []str
 			sources[alias] = item.SourcePath
 		}
 		llmItems = append(llmItems, EvidenceItemLLM{
-			Ref:     fmt.Sprintf("%s#%d", alias, item.ChunkRef.ChunkOrdinal),
-			Snippet: item.Snippet,
-			Score:   item.Score,
+			Ref:   fmt.Sprintf("%s#%d", alias, item.ChunkRef.ChunkOrdinal),
+			Text:  maskSecrets(item.Text),
+			Score: item.Score,
 		})
 	}
 
@@ -839,7 +838,6 @@ func (s *Service) FetchChunk(ctx context.Context, sourcePath string, chunkOrdina
 		ChunkOrdinal: chunk.ChunkOrdinal,
 		ChunkLoc:     chunk.ChunkLoc,
 		Text:         chunk.Text,
-		Snippet:      chunk.Snippet,
 	}, nil
 }
 

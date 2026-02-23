@@ -57,7 +57,7 @@ type EvidenceItemFull struct {
 	DocumentVersion string         `json:"document_version"`
 	Title           string         `json:"title,omitempty"`
 	Date            string         `json:"date,omitempty"`
-	Snippet         string         `json:"snippet"`
+	Text            string         `json:"text"`
 	Score           float64        `json:"score"`
 	ScoreBreakdown  ScoreBreakdown `json:"score_breakdown,omitempty"`
 	Flags           []string       `json:"flags,omitempty"`
@@ -96,9 +96,9 @@ type EvidencePackFull struct {
 }
 
 type EvidenceItemLLM struct {
-	Ref     string  `json:"ref"`
-	Snippet string  `json:"snippet"`
-	Score   float64 `json:"score"`
+	Ref   string  `json:"ref"`
+	Text  string  `json:"text"`
+	Score float64 `json:"score"`
 }
 
 type EvidencePackLLM struct {
@@ -127,7 +127,6 @@ type IndexedChunk struct {
 	Confidentiality string   `json:"confidentiality,omitempty"`
 	DocType         string   `json:"doc_type,omitempty"`
 	Text            string   `json:"text"`
-	Snippet         string   `json:"snippet"`
 	Flags           []string `json:"flags,omitempty"`
 	RiskScore       float64  `json:"risk_score,omitempty"`
 	ParentOrdinal   *int     `json:"parent_ordinal,omitempty"`
@@ -154,7 +153,6 @@ type ChunkResult struct {
 	ChunkOrdinal int      `json:"chunk_ordinal"`
 	ChunkLoc     ChunkLoc `json:"chunk_loc"`
 	Text         string   `json:"text"`
-	Snippet      string   `json:"snippet"`
 }
 
 type docMeta struct {

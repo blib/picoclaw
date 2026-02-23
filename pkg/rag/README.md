@@ -2,6 +2,36 @@
 
 ResearchRAG engine for PicoClaw.
 
+## Overview
+
+`pkg/rag` is a local-first retrieval engine for personal knowledge bases. It turns markdown files under `kb_root` into searchable chunks, stores an index on disk, and serves fast evidence retrieval for both CLI (`picoclaw rag ...`) and tool use (`rag_search`).
+
+How it works end-to-end:
+
+1. Ingest markdown files from `kb_root` (with workspace/symlink safety checks).
+2. Split documents into chunks using the configured strategy (`markdown` default).
+3. Persist index artifacts under `index_root/state`.
+4. Execute search with provider backend:
+   - `simple`: token-count lexical retrieval, smallest footprint.
+   - `comet`: BM25 lexical retrieval, optional vector hybrid when embeddings are enabled.
+5. Apply policy/filters/guardrails and return both rich audit output and compact LLM output.
+
+Design goals and operational concerns:
+
+- **Small-memory default path**: `simple` provider and `comet` keyword-only mode work without embeddings and are best for constrained devices.
+- **Semantic search is opt-in**: vectors are only built when `allow_external_embeddings=true`; this increases RAM roughly linearly with corpus size and embedding dimensions.
+- **CGO is a hard backend constraint**: with `CGO_ENABLED=0`, we cannot use true on-disk ANN engines (for example FAISS-based backends), so vector search remains in-memory and is RAM-bounded.
+- **Crash consistency**: comet uses a dirty-flag + two-phase rebuild/flush protocol to recover safely after interruptions.
+- **Portability first**: pure-Go implementation (`CGO_ENABLED=0` compatible) for single-binary cross-platform deployment.
+- **Binary size budget**: current measured build in this workspace is ~26 MB; symbol-attributed `pkg/rag + comet + bbolt` is ~0.79% (directional estimate, see Section 20.4).
+- **Current combined symbol size**: `pkg/rag + comet + bbolt` = `212,358` bytes (~`0.79%` of binary).
+
+For sizing and tradeoffs, see:
+
+- Section 20.2 for runtime memory formulas
+- Section 20.3 for the 10 MiB document-size example
+- Section 20.4 for measured binary impact in this workspace
+
 ## 1. Scope and status
 
 `pkg/rag` is the retrieval core behind:
@@ -301,7 +331,7 @@ The chunking hash includes the strategy name: `strategy:softBytes:hardBytes:docH
 9. Apply risk penalty from guardrails
 10. Apply min-score cutoff (request > config > profile)
 11. Deterministic sort + per-source cap
-11. Build both outputs:
+12. Build both outputs:
     - `EvidencePackFull`
     - `EvidencePackLLM` (compact)
 
@@ -559,6 +589,8 @@ Comet keeps all indexes (BM25 + flat vector) in memory, persisted to bbolt + fla
 
 Once the index outgrows available RAM, there are no adequate pure-Go solutions for disk-backed ANN search. The pure-Go vector index ecosystem is limited to flat scans and toy HNSW implementations — nothing comparable to FAISS IVF/PQ or sqlite-vec for on-disk operation.
 
+In practical terms: the `CGO_ENABLED=0` requirement is the blocking constraint for using FAISS-backed on-disk ANN in this package. As long as this constraint stays, retrieval quality can scale, but index residency remains memory-bound.
+
 **Decision to revisit:**
 
 The CGO constraint should be reconsidered if any of these become true:
@@ -661,7 +693,102 @@ Supported providers (auto-detected from LLM provider config):
 
 Embeddings are opt-in: set `allow_external_embeddings: true` in RAG config. When disabled, the comet provider operates in BM25-only mode.
 
-## 20. Testing
+## 20. Memory footprint assessment (code + runtime)
+
+This section gives a practical sizing model for `pkg/rag`, aligned with PicoClaw's lightweight goals in `ROADMAP.md` and the root `README.md`.
+
+### 20.1 Code footprint (static)
+
+Current codebase footprint in this repo:
+
+- `pkg/rag`: 23 `.go` files, ~165 KB source (`wc -c` aggregate), ~236 KB directory size.
+- `simple` provider path: no extra non-stdlib dependency inside `pkg/rag` runtime path.
+- `comet` provider path: adds pure-Go dependencies:
+  - `github.com/wizenheimer/comet` (module cache ~2.4 MB source)
+  - `go.etcd.io/bbolt` (module cache ~1.0 MB source)
+
+Notes:
+
+- These are source/module-cache sizes, not exact binary-section deltas.
+- Both providers remain `CGO_ENABLED=0` compatible and keep single-binary portability.
+
+### 20.2 Runtime memory model
+
+`simple` provider:
+
+- First read loads full `IndexStore{Info, Chunks}` into memory and caches it.
+- Memory scales with total chunk text + metadata object overhead.
+- Best for smallest deployments when semantic search is not required.
+
+`comet` provider (keyword/BM25 mode):
+
+- Streams chunks from bbolt into BM25 index (`ensureLoaded`), without keeping a full `[]IndexedChunk` in steady state.
+- Memory is mostly BM25 structures (token/posting lists), plus query-time temporary objects.
+
+`comet` provider (hybrid/semantic mode):
+
+- Adds `FlatIndex` vectors in RAM as `[]float32` per chunk.
+- Vector payload is exact and dominates memory for large indexes.
+
+Document-size sizing formulas:
+
+- `B` = KB corpus bytes (all markdown source bytes under `kb_root`)
+- `Sdoc` = average document size in bytes
+- `Ddocs = ceil(B / Sdoc)` = estimated number of documents
+- `E` = effective bytes per chunk after markdown-aware splitting (practical default estimate: ~3 KiB when `chunk_soft_bytes=4096`)
+- `Cdoc = ceil(Sdoc / E)` = estimated chunks per document
+- `Nchunks = Ddocs * Cdoc`
+- Vector payload bytes: `Nchunks * dims * 4`
+- `vectors.bin` on disk: `20 + Nchunks * dims * 4`
+- 64-bit Go steady in-memory estimate (payload + node headers): `Nchunks * (dims*4 + ~32)`
+- Build/reindex transient overhead adds one extra `[][]float32` header slice: `Nchunks * ~24` bytes (64-bit), typically much smaller than payload
+
+### 20.3 10 MiB KB example (by average document size)
+
+Assumptions:
+
+- Total KB corpus size `B = 10 MiB`
+- Effective chunk bytes `E = 3 KiB` (markdown default estimate)
+- For this corpus size, `Nchunks ~= ceil(B/E) = 3414` (doc size distribution changes chunk boundaries, but total chunk count stays close for fixed `B` and `E`)
+
+Default embedding dimensions from `embedder.go` provider presets:
+
+- Ollama `nomic-embed-text`: 768d
+- Nvidia `NV-Embed-QA`: 1024d
+- OpenAI `text-embedding-3-small`: 1536d
+- Zhipu `embedding-3`: 2048d
+- vLLM/custom OpenAI-compatible: model-defined
+
+Using `Nchunks ~= 3414` (10 MiB / 3 KiB), estimated vector RAM:
+
+| Embedding dims | Estimated steady RAM with node overhead (`N*(dims*4+32)`) |
+| -------------- | --------------------------------------------------------- |
+| 768            | 10.1 MiB                                                  |
+| 1024           | 13.4 MiB                                                  |
+| 1536           | 20.1 MiB                                                  |
+| 2048           | 26.8 MiB                                                  |
+
+Scale rules:
+
+- Memory is linear in corpus bytes and embedding dimensions.
+- If corpus grows from 10 MiB to 50 MiB, vector memory grows ~5x.
+
+Operational guidance for constrained boards:
+
+- Tight RAM budget (<64 MB process target): prefer `simple`, or `comet` with `keyword-only` and embeddings disabled.
+- If semantic search is required, prefer lower-dimension models (e.g., 768d) and keep chunk count bounded via chunking/profile controls.
+
+### 20.4 Binary impact assessment (built binary)
+
+Measured values on Mac machine:
+
+- Symbol-size totals by package prefix:
+  - `github.com/sipeed/picoclaw/pkg/rag`: 94,374 bytes
+  - `github.com/wizenheimer/comet`: 44,752 bytes
+  - `go.etcd.io/bbolt`: 73,232 bytes
+  - Combined (these 3): 212,358 bytes (~0.79% of binary)
+
+## 21. Testing
 
 Package tests:
 
@@ -708,7 +835,7 @@ Integration-adjacent test:
 - `pkg/tools/rag_search_test.go`
   - validates compact JSON payload contract for tool execution
 
-## 21. Non-goals in this package (current)
+## 22. Non-goals in this package (current)
 
 - Draft synthesis (external skill)
 - PDF extraction/parsing

@@ -188,7 +188,7 @@ func ragSearchCmd(svc *rag.Service, args []string) {
 			cBold, i+1, cReset,
 			cCyan, item.SourcePath, item.ChunkRef.ChunkOrdinal, cReset,
 			cGreen, item.Score, cReset)
-		fmt.Printf("     %s%s%s\n", cDim, item.Snippet, cReset)
+		fmt.Printf("     %s%s%s\n", cDim, safePreview(item.Text, 120), cReset)
 	}
 	if len(res.Full.Notes) > 0 {
 		fmt.Printf("\n%s📝 Notes:%s\n", cYellow, cReset)
@@ -439,4 +439,12 @@ func formatBytes(b int) string {
 	default:
 		return fmt.Sprintf("%d B", b)
 	}
+}
+
+func safePreview(text string, max int) string {
+	runes := []rune(text)
+	if len(runes) <= max {
+		return text
+	}
+	return string(runes[:max]) + "..."
 }

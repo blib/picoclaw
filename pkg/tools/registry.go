@@ -180,6 +180,18 @@ func (r *ToolRegistry) List() []string {
 	return r.sortedToolNames()
 }
 
+// All returns every registered Tool value.
+func (r *ToolRegistry) All() []Tool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	out := make([]Tool, 0, len(r.tools))
+	for _, t := range r.tools {
+		out = append(out, t)
+	}
+	return out
+}
+
 // Count returns the number of registered tools.
 func (r *ToolRegistry) Count() int {
 	r.mu.RLock()

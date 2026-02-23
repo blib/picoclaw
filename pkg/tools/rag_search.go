@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/sipeed/picoclaw/pkg/config"
@@ -12,6 +13,7 @@ import (
 
 type RAGSearchTool struct {
 	service *rag.Service
+	watcher *rag.Watcher
 }
 
 // NewRAGSearchTool returns nil when disabled so deployments can keep one binary
@@ -21,8 +23,31 @@ func NewRAGSearchTool(workspace string, cfg config.RAGToolsConfig, providers con
 		return nil
 	}
 	svc := rag.NewService(workspace, cfg, providers)
-	go svc.EnsureIndex(context.Background())
-	return &RAGSearchTool{service: svc}
+	tool := &RAGSearchTool{service: svc}
+
+	go func() {
+		ctx := context.Background()
+		svc.EnsureIndex(ctx)
+
+		w, err := rag.NewWatcher(svc)
+		if err != nil {
+			// Non-fatal: search works, live updates don't.
+			fmt.Fprintf(os.Stderr, "rag watcher init: %v\n", err)
+			return
+		}
+		tool.watcher = w
+		w.Start(ctx)
+	}()
+
+	return tool
+}
+
+// Stop shuts down the background file watcher, flushing any dirty index
+// state to disk. Safe to call on a nil receiver or when no watcher is running.
+func (t *RAGSearchTool) Stop() {
+	if t != nil && t.watcher != nil {
+		t.watcher.Stop()
+	}
 }
 
 // Name keeps a stable tool identifier required by prompts and registry wiring.
@@ -32,7 +57,7 @@ func (t *RAGSearchTool) Name() string {
 
 // Description clarifies the compact-output contract to reduce token cost in agent loops.
 func (t *RAGSearchTool) Description() string {
-	return "Search local research knowledge base and return compact evidence pack for LLM use"
+	return "Search local knowledge base and return compact evidence pack for LLM use"
 }
 
 // Parameters defines a strict input schema so invalid calls fail early instead
@@ -60,7 +85,46 @@ func (t *RAGSearchTool) Parameters() map[string]interface{} {
 			},
 			"filters": map[string]interface{}{
 				"type":        "object",
-				"description": "Optional filters",
+				"description": "Optional filters to narrow search results",
+				"properties": map[string]interface{}{
+					"tags": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Filter by document tags (from frontmatter)",
+					},
+					"tag_mode": map[string]interface{}{
+						"type":        "string",
+						"enum":        []string{"any", "all"},
+						"description": "Match any or all tags (default: any)",
+					},
+					"project": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Filter by project name",
+					},
+					"doc_type": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Filter by document type (e.g. note, decision, template)",
+					},
+					"confidentiality_allow": map[string]interface{}{
+						"type":        "array",
+						"items":       map[string]interface{}{"type": "string"},
+						"description": "Allowed confidentiality levels (e.g. public, internal)",
+					},
+					"date_from": map[string]interface{}{
+						"type":        "string",
+						"description": "Include docs dated on or after (YYYY-MM-DD)",
+					},
+					"date_to": map[string]interface{}{
+						"type":        "string",
+						"description": "Include docs dated on or before (YYYY-MM-DD)",
+					},
+					"allow_restricted": map[string]interface{}{
+						"type":        "boolean",
+						"description": "Include restricted/confidential documents (default: false)",
+					},
+				},
 			},
 		},
 		"required": []string{"query"},

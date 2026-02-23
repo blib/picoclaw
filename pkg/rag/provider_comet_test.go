@@ -18,10 +18,10 @@ func mustCometProvider(t *testing.T, dir string, embedder Embedder) *cometProvid
 
 func testChunks() []IndexedChunk {
 	return []IndexedChunk{
-		{SourcePath: "notes/meeting.md", ChunkOrdinal: 1, Text: "We discussed caching strategy and invalidation policy for api responses", Snippet: "caching strategy..."},
-		{SourcePath: "notes/meeting.md", ChunkOrdinal: 2, Text: "The database migration requires downtime window of two hours", Snippet: "database migration..."},
-		{SourcePath: "notes/design.md", ChunkOrdinal: 1, Text: "Cache eviction uses least recently used algorithm with ttl fallback", Snippet: "cache eviction..."},
-		{SourcePath: "notes/ops.md", ChunkOrdinal: 1, Text: "Deploy the service to production using blue green deployment", Snippet: "deploy service..."},
+		{SourcePath: "notes/meeting.md", ChunkOrdinal: 1, Text: "We discussed caching strategy and invalidation policy for api responses"},
+		{SourcePath: "notes/meeting.md", ChunkOrdinal: 2, Text: "The database migration requires downtime window of two hours"},
+		{SourcePath: "notes/design.md", ChunkOrdinal: 1, Text: "Cache eviction uses least recently used algorithm with ttl fallback"},
+		{SourcePath: "notes/ops.md", ChunkOrdinal: 1, Text: "Deploy the service to production using blue green deployment"},
 	}
 }
 
