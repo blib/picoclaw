@@ -170,6 +170,12 @@ func registerSharedTools(
 			return registry.CanSpawnSubagent(currentAgentID, targetAgentID)
 		})
 		agent.Tools.Register(spawnTool)
+
+		// RAG search tool
+		ragTool := tools.NewRAGSearchTool(agent.Workspace, cfg.Tools.RAG, cfg.Providers)
+		if ragTool != nil {
+			agent.Tools.Register(ragTool)
+		}
 	}
 }
 
@@ -316,10 +322,14 @@ func (al *AgentLoop) Run(ctx context.Context) error {
 func (al *AgentLoop) Stop() {
 	al.running.Store(false)
 
-	// Shut down tools that hold background resources (e.g. RAG watcher).
-	for _, t := range al.tools.All() {
-		if s, ok := t.(interface{ Stop() }); ok {
-			s.Stop()
+	// Shut down tools that hold background resources
+	for _, agentID := range al.registry.ListAgentIDs() {
+		if agent, ok := al.registry.GetAgent(agentID); ok {
+			for _, t := range agent.Tools.All() {
+				if s, ok := t.(interface{ Stop() }); ok {
+					s.Stop()
+				}
+			}
 		}
 	}
 }

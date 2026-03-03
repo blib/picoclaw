@@ -324,6 +324,22 @@
           "download_path": "/api/v1/download"
         }
       }
+    },
+    "rag": {
+      "enabled": false,
+      "index_provider": "simple",
+      "chunk_strategy": "markdown",
+      "chunk_soft_bytes": 4096,
+      "chunk_hard_bytes": 8192,
+      "kb_root": "workspace/kb",
+      "index_root": "workspace/.rag",
+      "default_profile_id": "default_research",
+      "queue_size": 16,
+      "concurrency": 3,
+      "allow_external_embeddings": false,
+      "embedding_provider": "",
+      "embedding_model": "",
+      "denylist_paths": []
     }
   },
   "heartbeat": {

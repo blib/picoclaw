@@ -615,6 +615,35 @@ type ToolsConfig struct {
 	Skills          SkillsToolsConfig  `json:"skills"`
 	MediaCleanup    MediaCleanupConfig `json:"media_cleanup"`
 	MCP             MCPConfig          `json:"mcp"`
+	RAG             RAGToolsConfig     `json:"rag"`
+}
+
+// RAGToolsConfig configures the local ResearchRAG knowledge-base search.
+type RAGToolsConfig struct {
+	Enabled                 bool     `json:"enabled"                   env:"PICOCLAW_TOOLS_RAG_ENABLED"`
+	IndexProvider           string   `json:"index_provider"            env:"PICOCLAW_TOOLS_RAG_INDEX_PROVIDER"`
+	ChunkStrategy           string   `json:"chunk_strategy"            env:"PICOCLAW_TOOLS_RAG_CHUNK_STRATEGY"`
+	ChunkSoftBytes          int      `json:"chunk_soft_bytes"          env:"PICOCLAW_TOOLS_RAG_CHUNK_SOFT_BYTES"`
+	ChunkHardBytes          int      `json:"chunk_hard_bytes"          env:"PICOCLAW_TOOLS_RAG_CHUNK_HARD_BYTES"`
+	ChunkOverlapBytes       int      `json:"chunk_overlap_bytes"       env:"PICOCLAW_TOOLS_RAG_CHUNK_OVERLAP_BYTES"`
+	SlidingWindowUnits      int      `json:"sliding_window_units"      env:"PICOCLAW_TOOLS_RAG_SLIDING_WINDOW_UNITS"`
+	SlidingStrideUnits      int      `json:"sliding_stride_units"      env:"PICOCLAW_TOOLS_RAG_SLIDING_STRIDE_UNITS"`
+	HierarchicalChildBytes  int      `json:"hierarchical_child_bytes"  env:"PICOCLAW_TOOLS_RAG_HIERARCHICAL_CHILD_BYTES"`
+	SemanticDriftThreshold  float64  `json:"semantic_drift_threshold"  env:"PICOCLAW_TOOLS_RAG_SEMANTIC_DRIFT_THRESHOLD"`
+	KBRoot                  string   `json:"kb_root"                   env:"PICOCLAW_TOOLS_RAG_KB_ROOT"`
+	IndexRoot               string   `json:"index_root"                env:"PICOCLAW_TOOLS_RAG_INDEX_ROOT"`
+	AllowExternalEmbeddings bool     `json:"allow_external_embeddings" env:"PICOCLAW_TOOLS_RAG_ALLOW_EXTERNAL_EMBEDDINGS"`
+	EmbeddingProvider       string   `json:"embedding_provider"        env:"PICOCLAW_TOOLS_RAG_EMBEDDING_PROVIDER"`
+	EmbeddingModelID        string   `json:"embedding_model"           env:"PICOCLAW_TOOLS_RAG_EMBEDDING_MODEL"`
+	EmbeddingAPIBase        string   `json:"embedding_api_base"        env:"PICOCLAW_TOOLS_RAG_EMBEDDING_API_BASE"`
+	EmbeddingAPIKey         Secret   `json:"embedding_api_key"         env:"PICOCLAW_TOOLS_RAG_EMBEDDING_API_KEY"`
+	QueueSize               int      `json:"queue_size"                env:"PICOCLAW_TOOLS_RAG_QUEUE_SIZE"`
+	Concurrency             int      `json:"concurrency"               env:"PICOCLAW_TOOLS_RAG_CONCURRENCY"`
+	DocumentHardBytes       int      `json:"document_hard_bytes"       env:"PICOCLAW_TOOLS_RAG_DOCUMENT_HARD_BYTES"`
+	MaxChunksPerDocument    int      `json:"max_chunks_per_document"   env:"PICOCLAW_TOOLS_RAG_MAX_CHUNKS_PER_DOCUMENT"`
+	DefaultProfileID        string   `json:"default_profile_id"        env:"PICOCLAW_TOOLS_RAG_DEFAULT_PROFILE_ID"`
+	MinScore                float64  `json:"min_score"                 env:"PICOCLAW_TOOLS_RAG_MIN_SCORE"`
+	DenylistPaths           []string `json:"denylist_paths"            env:"PICOCLAW_TOOLS_RAG_DENYLIST_PATHS"`
 }
 
 type SkillsToolsConfig struct {
