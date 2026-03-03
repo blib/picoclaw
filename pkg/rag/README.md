@@ -181,6 +181,7 @@ type IndexStore struct {
 - `built_at`
 - `embedding_model_id`
 - `chunking_hash`
+- `files_fingerprint`
 - `warnings[]`
 - `total_documents`
 - `total_chunks`
@@ -188,8 +189,8 @@ type IndexStore struct {
 `IndexedChunk` includes:
 
 - identity: `source_path`, `chunk_ordinal`, `chunk_loc`
-- metadata: `title`, `date`, `project`, `tags`, `confidentiality`, `doc_type`
-- content: `text`, `snippet`
+- metadata: `title`, `date`, `tags`
+- content: `text`
 - safety: `flags`, `risk_score`
 - diagnostics: `document_version`, `paragraph_id`
 
@@ -205,7 +206,7 @@ type IndexStore struct {
    - symlink resolution remains inside workspace
 5. Parse frontmatter + markdown body
 6. Chunk body with `splitMarkdownChunks`
-7. Normalize text and generate snippet
+7. Normalize text
 8. Run injection heuristics and assign risk
 9. Append `IndexedChunk` entries to provider payload
 10. Provider persists index in its own format
@@ -358,7 +359,7 @@ The chunking hash includes the strategy name: `strategy:softBytes:hardBytes:docH
 Candidate flow:
 
 1. Provider returns top-N raw hits.
-2. Service applies access/filter policy (`confidentiality`, tags/project/doc_type/date).
+2. Service applies filters (tags, date range).
 3. Service normalizes score components.
 4. Service applies profile weights + risk penalty.
 5. Drop candidates below effective `min_score` (priority: request > config > profile).
@@ -448,19 +449,13 @@ Supported in `SearchFilters`:
 
 - `tags`
 - `tag_mode` (`any` / `all`)
-- `project`
-- `doc_type`
 - `date_from`, `date_to`
-- `confidentiality_allow`
-- `allow_restricted`
 
 Semantics:
 
 - AND across groups
 - OR within each list
 - `tag_mode=all` requires all tag values to match
-- restricted content is blocked unless `allow_restricted=true`
-- validation fails if `restricted` requested without allow flag
 
 ## 12. Guardrails and masking
 
@@ -474,7 +469,7 @@ Heuristic flags applied per chunk:
 
 `risk_score` in `[0,1]` is converted to ranking penalty.
 
-### Snippet masking
+### Secret masking
 
 `maskSecrets` redacts patterns for:
 
@@ -500,7 +495,7 @@ Compact design:
 
 - one source alias table: `S1 -> source_path`
 - items reference aliases: `S1#3`
-- only `ref`, `snippet`, `score`, `notes`
+- only `ref`, `text`, `score`, `notes`
 
 ## 14. Queueing/concurrency model
 
@@ -682,14 +677,17 @@ w.Stop()       // flushes if dirty, closes fsnotify
 
 Embeddings are handled by the `Embedder` interface in `embedder.go`. The default implementation (`httpEmbedder`) calls any OpenAI-compatible `/v1/embeddings` endpoint.
 
-Supported providers (auto-detected from LLM provider config):
+Supported providers (configured via `tools.rag.provider`):
 
-- OpenAI
-- Anthropic (via proxy)
-- OpenRouter
-- Gemini
-- Zhipu
-- Any OpenAI-compatible endpoint
+| Provider | Default `api_base` | Default model | Dims | Needs key |
+|----------|-------------------|---------------|------|-----------|
+| `openai` | `https://api.openai.com/v1` | `text-embedding-3-small` | 1536 | yes |
+| `ollama` | `http://localhost:11434/v1` | `nomic-embed-text` | 768 | no |
+| `nvidia` | `https://integrate.api.nvidia.com/v1` | `NV-Embed-QA` | 1024 | yes |
+| `zhipu` | `https://open.bigmodel.cn/api/paas/v4` | `embedding-3` | 2048 | yes |
+| `vllm` | _(user must set `api_base`)_ | _(user must set `model`)_ | — | no |
+
+When `api_base` is left empty, the provider default is used. When `api_key` is empty and the provider requires one, the embedder falls back to keyword-only with a warning.
 
 Embeddings are opt-in: set `allow_external_embeddings: true` in RAG config. When disabled, the comet provider operates in BM25-only mode.
 

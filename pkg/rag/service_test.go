@@ -59,6 +59,157 @@ We discussed caching strategy and invalidation policy for api responses.
 	}
 }
 
+func TestEnsureIndexRebuildsWhenFileAdded(t *testing.T) {
+	workspace := t.TempDir()
+	kbNotes := filepath.Join(workspace, "kb", "notes")
+	if err := os.MkdirAll(kbNotes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `---
+title: First Doc
+date: 2026-02-10
+---
+
+First document content about caching.
+`
+	if err := os.WriteFile(filepath.Join(kbNotes, "first.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rcfg := config.DefaultConfig().Tools.RAG
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
+	if _, err := svc.BuildIndex(context.Background()); err != nil {
+		t.Fatalf("initial BuildIndex failed: %v", err)
+	}
+
+	// Add a new file (simulates file added while binary was down).
+	newContent := `---
+title: Second Doc
+date: 2026-02-11
+---
+
+Second document about networking.
+`
+	if err := os.WriteFile(filepath.Join(kbNotes, "second.md"), []byte(newContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create fresh service instance (simulates restart) — index already exists on disk.
+	svc2 := NewService(workspace, rcfg, config.ProvidersConfig{})
+	// EnsureIndex should detect the new file and rebuild.
+	svc2.EnsureIndex(context.Background())
+
+	res, err := svc2.Search(context.Background(), SearchRequest{Query: "networking", TopK: 5})
+	if err != nil {
+		t.Fatalf("Search failed: %v", err)
+	}
+	found := false
+	for _, item := range res.Full.Items {
+		if strings.HasSuffix(item.SourcePath, "second.md") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected second.md (added after initial build) to be indexed after restart")
+	}
+}
+
+func TestEnsureIndexRebuildsWhenConfigChanged(t *testing.T) {
+	workspace := t.TempDir()
+	kbNotes := filepath.Join(workspace, "kb", "notes")
+	if err := os.MkdirAll(kbNotes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	content := `---
+title: Doc
+date: 2026-02-10
+---
+
+Some content about testing.
+`
+	if err := os.WriteFile(filepath.Join(kbNotes, "doc.md"), []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rcfg := config.DefaultConfig().Tools.RAG
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
+	info1, err := svc.BuildIndex(context.Background())
+	if err != nil {
+		t.Fatalf("initial BuildIndex failed: %v", err)
+	}
+
+	// Change embedding provider (simulates user editing config while binary is down).
+	rcfg2 := rcfg
+	rcfg2.EmbeddingProvider = "ollama"
+	rcfg2.EmbeddingModelID = "nomic-embed-text"
+	svc2 := NewService(workspace, rcfg2, config.ProvidersConfig{})
+	svc2.EnsureIndex(context.Background())
+
+	provider2, _ := svc2.providerOrErr()
+	info2, _ := provider2.LoadIndexInfo(context.Background())
+	if info2 == nil {
+		t.Fatal("expected index info after EnsureIndex")
+	}
+
+	if info2.ConfigHash == info1.ConfigHash {
+		t.Error("expected config hash to change after provider/model change")
+	}
+	if info2.EmbeddingModelID != "nomic-embed-text" {
+		t.Errorf("expected embedding model 'nomic-embed-text', got %q", info2.EmbeddingModelID)
+	}
+}
+
+func TestEnsureIndexRebuildsLegacyIndex(t *testing.T) {
+	workspace := t.TempDir()
+	kbNotes := filepath.Join(workspace, "kb", "notes")
+	if err := os.MkdirAll(kbNotes, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(filepath.Join(kbNotes, "doc.md"), []byte("---\ntitle: Doc\ndate: 2026-02-10\n---\n\nContent.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rcfg := config.DefaultConfig().Tools.RAG
+	svc := NewService(workspace, rcfg, config.ProvidersConfig{})
+	if _, err := svc.BuildIndex(context.Background()); err != nil {
+		t.Fatalf("initial BuildIndex failed: %v", err)
+	}
+
+	// Simulate legacy index by clearing ConfigHash and FilesFingerprint.
+	provider, _ := svc.providerOrErr()
+	info, _ := provider.LoadIndexInfo(context.Background())
+	info.ConfigHash = ""
+	info.FilesFingerprint = ""
+	if err := provider.Build(context.Background(), nil, *info); err != nil {
+		// Build with nil chunks just to store the modified info.
+		// Fall back to loading chunks and rebuilding.
+		chunks, _ := provider.LoadChunks(context.Background())
+		if err := provider.Build(context.Background(), chunks, *info); err != nil {
+			t.Fatalf("failed to store legacy index info: %v", err)
+		}
+	}
+
+	// New service instance should detect missing hashes and rebuild.
+	svc2 := NewService(workspace, rcfg, config.ProvidersConfig{})
+	svc2.EnsureIndex(context.Background())
+
+	provider2, _ := svc2.providerOrErr()
+	info2, _ := provider2.LoadIndexInfo(context.Background())
+	if info2 == nil {
+		t.Fatal("expected index info after EnsureIndex")
+	}
+	if info2.ConfigHash == "" {
+		t.Error("expected non-empty ConfigHash after rebuild of legacy index")
+	}
+	if info2.FilesFingerprint == "" {
+		t.Error("expected non-empty FilesFingerprint after rebuild of legacy index")
+	}
+}
+
 func TestBuildIndexFailsForUnknownProvider(t *testing.T) {
 	workspace := t.TempDir()
 	rcfg := config.DefaultConfig().Tools.RAG

@@ -70,15 +70,17 @@ type TimeSpan struct {
 }
 
 type IndexInfo struct {
-	IndexVersion     string   `json:"index_version"`
-	IndexState       string   `json:"index_state"`
-	IndexProvider    string   `json:"index_provider,omitempty"`
-	BuiltAt          string   `json:"built_at"`
-	EmbeddingModelID string   `json:"embedding_model_id,omitempty"`
-	ChunkingHash     string   `json:"chunking_hash,omitempty"`
-	Warnings         []string `json:"warnings,omitempty"`
-	TotalDocuments   int      `json:"total_documents"`
-	TotalChunks      int      `json:"total_chunks"`
+	IndexVersion      string   `json:"index_version"`
+	IndexState        string   `json:"index_state"`
+	IndexProvider     string   `json:"index_provider,omitempty"`
+	BuiltAt           string   `json:"built_at"`
+	EmbeddingModelID  string   `json:"embedding_model_id,omitempty"`
+	ChunkingHash      string   `json:"chunking_hash,omitempty"`
+	ConfigHash        string   `json:"config_hash,omitempty"`
+	FilesFingerprint  string   `json:"files_fingerprint,omitempty"`
+	Warnings          []string `json:"warnings,omitempty"`
+	TotalDocuments    int      `json:"total_documents"`
+	TotalChunks       int      `json:"total_chunks"`
 }
 
 type EvidencePackFull struct {

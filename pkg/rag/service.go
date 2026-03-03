@@ -362,6 +362,8 @@ func (s *Service) buildChunksAndInfo(ctx context.Context) ([]IndexedChunk, *Inde
 		BuiltAt:          now.Format(time.RFC3339),
 		EmbeddingModelID: s.cfg.EmbeddingModelID,
 		ChunkingHash:     sha256B64([]byte(fmt.Sprintf("%s:%d:%d:%d", s.chunker.Name(), s.cfg.ChunkSoftBytes, s.cfg.ChunkHardBytes, s.cfg.MaxChunksPerDocument))),
+		ConfigHash:       s.configHash(),
+		FilesFingerprint: s.filesFingerprint(),
 		Warnings:         warnings,
 		TotalDocuments:   docCount,
 		TotalChunks:      len(indexedChunks),
@@ -436,14 +438,13 @@ func (s *Service) EnsureIndex(ctx context.Context) {
 
 	needsBuild := false
 	info, _ := provider.LoadIndexInfo(ctx)
-	if info == nil {
-		logger.Info("rag: no existing index found, will build")
-		needsBuild = true
-	} else if info.TotalChunks == 0 {
-		logger.Info("rag: existing index is empty, will rebuild")
+	if info == nil || info.TotalChunks == 0 {
 		needsBuild = true
 	} else if fp, ok := provider.(FlushableProvider); ok && fp.IsDirty() {
-		logger.Info("rag: index dirty, will rebuild")
+		needsBuild = true
+	} else if s.configHash() != info.ConfigHash {
+		needsBuild = true
+	} else if s.filesFingerprint() != info.FilesFingerprint {
 		needsBuild = true
 	}
 
@@ -1198,4 +1199,60 @@ func isWithinPath(candidate, root string) bool {
 func sha256B64(data []byte) string {
 	sum := sha256.Sum256(data)
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+// filesFingerprint computes a lightweight hash over the set of .md files in
+// kbRoot (path + modtime + size). This lets EnsureIndex detect files added,
+// removed, or modified while the binary was not running.
+func (s *Service) filesFingerprint() string {
+	type entry struct {
+		rel     string
+		modTime int64
+		size    int64
+	}
+	var entries []entry
+	_ = filepath.WalkDir(s.kbRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(path)) != ".md" {
+			return nil
+		}
+		rel, err := filepath.Rel(s.kbRoot, path)
+		if err != nil {
+			return nil
+		}
+		fi, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		entries = append(entries, entry{
+			rel:     filepath.ToSlash(rel),
+			modTime: fi.ModTime().UnixNano(),
+			size:    fi.Size(),
+		})
+		return nil
+	})
+	sort.Slice(entries, func(i, j int) bool { return entries[i].rel < entries[j].rel })
+	h := sha256.New()
+	for _, e := range entries {
+		fmt.Fprintf(h, "%s\t%d\t%d\n", e.rel, e.modTime, e.size)
+	}
+	return base64.RawURLEncoding.EncodeToString(h.Sum(nil))
+}
+
+// configHash computes a hash over embedding and chunking config fields so
+// EnsureIndex can detect provider/model/chunking changes across restarts.
+func (s *Service) configHash() string {
+	raw := fmt.Sprintf("%s\n%s\n%s\n%v\n%s\n%d\n%d\n%d",
+		s.cfg.EmbeddingProvider,
+		s.cfg.EmbeddingModelID,
+		s.cfg.EmbeddingAPIBase,
+		s.cfg.AllowExternalEmbeddings,
+		s.chunker.Name(),
+		s.cfg.ChunkSoftBytes,
+		s.cfg.ChunkHardBytes,
+		s.cfg.MaxChunksPerDocument,
+	)
+	return sha256B64([]byte(raw))
 }
