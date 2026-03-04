@@ -345,7 +345,20 @@ func TestClassifyCommand_ExtraArgModifiers_NoOverrideBuiltIn(t *testing.T) {
 
 func TestClassifyCommand_ShellWrappers(t *testing.T) {
 	// Shell wrappers must be critical to prevent classifier bypass.
-	shells := []string{"sh", "bash", "zsh", "dash", "fish", "ksh", "csh", "tcsh", "powershell", "pwsh", "cmd", "cmd.exe"}
+	shells := []string{
+		"sh",
+		"bash",
+		"zsh",
+		"dash",
+		"fish",
+		"ksh",
+		"csh",
+		"tcsh",
+		"powershell",
+		"pwsh",
+		"cmd",
+		"cmd.exe",
+	}
 	for _, sh := range shells {
 		t.Run(sh, func(t *testing.T) {
 			got := ClassifyCommand([]string{sh, "-c", "echo hi"}, nil)
