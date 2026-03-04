@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -174,37 +175,74 @@ func pathAwareExecHandler(env expand.Environ) func(next interp.ExecHandlerFunc) 
 
 // lookPath searches for an executable named cmd in the directories
 // listed in the PATH variable from the given environment.
+//
+// On Windows, PATHEXT extensions are probed (e.g., "git" → "git.exe").
+// The executable-bit check is skipped on Windows where it is meaningless.
 func lookPath(env expand.Environ, cmd string) (string, error) {
-	// If command contains a slash, it's a path - return as-is
-	if strings.Contains(cmd, "/") {
+	// If command already contains a path separator, it's a path — return as-is.
+	// filepath.Base handles both / and \ per platform.
+	if cmd != filepath.Base(cmd) {
 		return cmd, nil
 	}
 
 	// Get PATH from interpreter environment
 	pathVar := env.Get("PATH")
 	if !pathVar.Set {
-		// PATH not set in environment - let default handler try
 		return "", fmt.Errorf("PATH not set")
 	}
 	if pathVar.Str == "" {
 		return "", fmt.Errorf("PATH is empty")
 	}
 
+	exts := pathExtensions(env)
+
 	// Search each directory in PATH
 	for _, dir := range filepath.SplitList(pathVar.Str) {
 		if dir == "" {
 			dir = "."
 		}
-		fullPath := filepath.Join(dir, cmd)
-		// Check if file exists and is executable
-		if stat, err := os.Stat(fullPath); err == nil && !stat.IsDir() {
-			// On Unix, check executable bit
-			if stat.Mode()&0o111 != 0 {
+		for _, ext := range exts {
+			fullPath := filepath.Join(dir, cmd+ext)
+			if isExecutable(fullPath) {
 				return fullPath, nil
 			}
 		}
 	}
 
-	// Not found - let the default handler handle it
 	return "", fmt.Errorf("command %q not found in PATH", cmd)
+}
+
+// isExecutable reports whether the file at path exists and is executable.
+// On Unix, this checks the executable permission bits.
+// On Windows, file existence suffices (executability is determined by extension).
+func isExecutable(path string) bool {
+	stat, err := os.Stat(path)
+	if err != nil || stat.IsDir() {
+		return false
+	}
+	if runtime.GOOS == "windows" {
+		return true
+	}
+	return stat.Mode()&0o111 != 0
+}
+
+// pathExtensions returns the file extensions to probe when searching PATH.
+// On Windows, this reads PATHEXT from the environment (falling back to a
+// sensible default). On other platforms it returns [""] so the bare name
+// is tried exactly once.
+func pathExtensions(env expand.Environ) []string {
+	if runtime.GOOS != "windows" {
+		return []string{""}
+	}
+
+	// On Windows, try the bare name first, then each PATHEXT extension.
+	pathExt := env.Get("PATHEXT")
+	var exts []string
+	if pathExt.Set && pathExt.Str != "" {
+		exts = strings.Split(strings.ToLower(pathExt.Str), ";")
+	} else {
+		exts = []string{".com", ".exe", ".bat", ".cmd"}
+	}
+	// Prepend "" so the exact command name is tried first.
+	return append([]string{""}, exts...)
 }

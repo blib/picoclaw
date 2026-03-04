@@ -1,6 +1,12 @@
 package shell
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
+
+// Windows-specific command and arg modifier tests are in risk_windows_test.go
+// (guarded by //go:build windows).
 
 func TestClassifyCommand_BaseTable(t *testing.T) {
 	tests := []struct {
@@ -14,22 +20,38 @@ func TestClassifyCommand_BaseTable(t *testing.T) {
 		{[]string{"wc", "-l"}, RiskLow},
 		{[]string{"echo", "hello"}, RiskLow},
 		{[]string{"jq", ".field", "data.json"}, RiskLow},
+		{[]string{"ping", "localhost"}, RiskLow},
+		{[]string{"dig", "example.com"}, RiskLow},
+		{[]string{"ss", "-tulpn"}, RiskLow},
+		{[]string{"bc"}, RiskLow},
+		{[]string{"nproc"}, RiskLow},
 
 		{[]string{"cp", "a", "b"}, RiskMedium},
 		{[]string{"mv", "a", "b"}, RiskMedium},
 		{[]string{"python3", "-c", "print(1)"}, RiskMedium},
 		{[]string{"git", "status"}, RiskMedium},
 		{[]string{"curl", "https://example.com"}, RiskMedium},
+		{[]string{"openssl", "version"}, RiskMedium},
+		{[]string{"crontab", "-l"}, RiskMedium},
+		{[]string{"vim", "file.txt"}, RiskMedium},
 
 		{[]string{"rm", "file.txt"}, RiskHigh},
 		{[]string{"chmod", "755", "script.sh"}, RiskHigh},
 		{[]string{"docker", "ps"}, RiskHigh},
 		{[]string{"ssh", "user@host"}, RiskHigh},
+		{[]string{"nc", "-l", "4444"}, RiskHigh},
+		{[]string{"socat", "TCP:host:80", "STDOUT"}, RiskHigh},
+		{[]string{"useradd", "testuser"}, RiskHigh},
+		{[]string{"passwd", "testuser"}, RiskHigh},
+		{[]string{"shred", "file"}, RiskHigh},
 
 		{[]string{"sudo", "ls"}, RiskCritical},
 		{[]string{"dd", "if=/dev/zero", "of=/dev/sda"}, RiskCritical},
 		{[]string{"shutdown", "-h", "now"}, RiskCritical},
 		{[]string{"eval", "echo hi"}, RiskCritical},
+		{[]string{"chattr", "+i", "file"}, RiskCritical},
+		{[]string{"visudo"}, RiskCritical},
+		{[]string{"ip6tables", "-L"}, RiskCritical},
 	}
 
 	for _, tt := range tests {
@@ -83,6 +105,16 @@ func TestClassifyCommand_ArgumentModifiers(t *testing.T) {
 
 		{"apt install", []string{"apt", "install", "vim"}, RiskHigh},
 		{"apt purge", []string{"apt", "purge", "vim"}, RiskCritical},
+
+		{"find -delete", []string{"find", ".", "-name", "*.tmp", "-delete"}, RiskHigh},
+		{"find -exec", []string{"find", ".", "-exec", "rm", "{}", ";"}, RiskHigh},
+		{"sed -i", []string{"sed", "-i", "s/old/new/g", "file"}, RiskMedium},
+		{"rsync --delete", []string{"rsync", "-a", "--delete", "src/", "dst/"}, RiskCritical},
+		{"crontab -r", []string{"crontab", "-r"}, RiskHigh},
+		{"ssh -R (reverse tunnel)", []string{"ssh", "-R", "8080:localhost:80", "host"}, RiskHigh},
+		{"ssh -L (local tunnel)", []string{"ssh", "-L", "8080:remotehost:80", "host"}, RiskHigh},
+		{"tar --to-command", []string{"tar", "xf", "archive.tar", "--to-command", "sh"}, RiskCritical},
+		{"docker run --privileged", []string{"docker", "run", "--privileged", "ubuntu"}, RiskCritical},
 	}
 
 	for _, tt := range tests {
@@ -179,6 +211,84 @@ func TestClassifyCommand_BackslashPath(t *testing.T) {
 	got = ClassifyCommand([]string{"dd", "if=/dev/zero"}, nil)
 	if got != RiskCritical {
 		t.Errorf("bare dd should be critical, got %s", got)
+	}
+}
+
+func TestBaseCommand_StripsExeExtensions(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("extension stripping only applies on Windows")
+	}
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"cmd.exe", "cmd"},
+		{"GIT.EXE", "git"},
+		{"POWERSHELL.EXE", "powershell"},
+		{"script.bat", "script"},
+		{"helper.cmd", "helper"},
+		{"run.COM", "run"},
+		{"ls", "ls"},
+		{"my.tool", "my.tool"},
+		{"", "."},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := baseCommand(tt.input)
+			if got != tt.want {
+				t.Errorf("baseCommand(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBaseCommand_PreservesOnNonWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this test verifies non-Windows behavior")
+	}
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"cmd.exe", "cmd.exe"},  // NOT stripped
+		{"GIT.EXE", "GIT.EXE"},  // NOT lowercased
+		{"LS", "LS"},            // case preserved
+		{"ls", "ls"},            // unchanged
+		{"/usr/bin/git", "git"}, // filepath.Base still works
+		{"", "."},               // filepath.Base edge case
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := baseCommand(tt.input)
+			if got != tt.want {
+				t.Errorf("baseCommand(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestClassifyCommand_WindowsExePath(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("extension stripping only applies on Windows")
+	}
+	tests := []struct {
+		name string
+		args []string
+		want RiskLevel
+	}{
+		{"cmd.exe bare", []string{"cmd.exe"}, RiskCritical},
+		{"CMD.EXE upper", []string{"CMD.EXE"}, RiskCritical},
+		{"git.exe status", []string{"git.exe", "status"}, RiskMedium},
+		{"git.exe push", []string{"git.exe", "push"}, RiskHigh},
+		{"rm.exe -rf", []string{"rm.exe", "-rf", "/"}, RiskCritical},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ClassifyCommand(tt.args, nil)
+			if got != tt.want {
+				t.Errorf("ClassifyCommand(%v) = %s, want %s", tt.args, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -345,6 +455,7 @@ func TestClassifyCommand_ExtraArgModifiers_NoOverrideBuiltIn(t *testing.T) {
 
 func TestClassifyCommand_ShellWrappers(t *testing.T) {
 	// Shell wrappers must be critical to prevent classifier bypass.
+	// cmd and cmd.exe are tested in risk_windows_test.go.
 	shells := []string{
 		"sh",
 		"bash",
@@ -354,10 +465,7 @@ func TestClassifyCommand_ShellWrappers(t *testing.T) {
 		"ksh",
 		"csh",
 		"tcsh",
-		"powershell",
 		"pwsh",
-		"cmd",
-		"cmd.exe",
 	}
 	for _, sh := range shells {
 		t.Run(sh, func(t *testing.T) {

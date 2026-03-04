@@ -111,6 +111,15 @@
 
    Plus all variables matching the `LC_*` prefix.
 
+   On Windows (`runtime.GOOS == "windows"`), the allowlist MUST additionally include: `PATHEXT`, `SYSTEMROOT`, `SYSTEMDRIVE`, `COMSPEC`, `APPDATA`, `USERPROFILE`, `HOMEDRIVE`, `HOMEPATH`. Without `SYSTEMROOT`, many Windows system calls fail. Without `PATHEXT`, executable lookup cannot probe extensions.
+
+7a. The `pathAwareExecHandler` MUST resolve commands using the sanitized environment's PATH (not `os.Getenv`). The `lookPath` implementation MUST:
+   - Detect path-containing commands via `filepath.Base` (handles both `/` and `\`), not `strings.Contains(cmd, "/")`.
+   - On Windows: probe PATHEXT extensions (`.com`, `.exe`, `.bat`, `.cmd` by default) from the sanitized environment for each PATH directory. Accept any non-directory file (the executable bit is meaningless on Windows).
+   - On Unix: require the executable permission bit (`mode & 0o111 != 0`).
+
+7b. The `baseCommand` function MUST extract the basename via `filepath.Base`. On Windows only, it MUST additionally lowercase the result and strip known executable extensions (`.exe`, `.cmd`, `.bat`, `.com`) so that `C:\Windows\System32\cmd.exe` resolves to `cmd` in the risk table. On Unix, these transformations MUST NOT be applied: commands are case-sensitive and extensions are part of the filename. Stripping them on Unix would let an attacker disguise a binary as a known-safe command (e.g., a malicious `ls.exe` classified as low-risk `ls`).
+
 8. The `interp.Runner` MUST be configured with an `OpenHandler` that validates all file-open paths (from shell redirections) resolve within the configured workspace directory. Paths to safe pseudo-devices (`/dev/null`, `/dev/zero`, `/dev/urandom`, `/dev/stdin`, `/dev/stdout`, `/dev/stderr`) MUST be exempted.
 
 9. The existing regex-based guard (`defaultDenyPatterns`, `guardCommand()`) MUST be removed entirely. The `ExecConfig` fields `EnableDenyPatterns`, `CustomDenyPatterns`, and `CustomAllowPatterns` MUST be removed from the struct.

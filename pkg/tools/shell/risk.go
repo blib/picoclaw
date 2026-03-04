@@ -3,6 +3,8 @@ package shell
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
+	"strings"
 )
 
 // RiskLevel represents the potential danger of a shell command.
@@ -124,6 +126,24 @@ var commandRiskTable = map[string]RiskLevel{
 	"paste":     RiskLow,
 	"expand":    RiskLow,
 	"unexpand":  RiskLow,
+	"man":       RiskLow,
+	"info":      RiskLow,
+	"dig":       RiskLow,
+	"nslookup":  RiskLow,
+	"host":      RiskLow,
+	"ping":      RiskLow,
+	"ss":        RiskLow,
+	"netstat":   RiskLow,
+	"lsblk":     RiskLow,
+	"w":         RiskLow,
+	"who":       RiskLow,
+	"last":      RiskLow,
+	"bc":        RiskLow,
+	"expr":      RiskLow,
+	"time":      RiskLow,
+	"nproc":     RiskLow,
+	"arch":      RiskLow,
+	"getent":    RiskLow,
 
 	// Medium — file modification, network reads, build tools
 	"cp":      RiskMedium,
@@ -163,6 +183,15 @@ var commandRiskTable = map[string]RiskLevel{
 	"perl":    RiskMedium,
 	"php":     RiskMedium,
 	"patch":   RiskMedium,
+	"nano":    RiskMedium,
+	"vi":      RiskMedium,
+	"vim":     RiskMedium,
+	"openssl": RiskMedium,
+	"crontab": RiskMedium,
+	"nohup":   RiskMedium,
+	"gpg":     RiskMedium,
+	"sftp":    RiskMedium,
+	"ftp":     RiskMedium,
 
 	// High — destructive, system-modifying
 	"rm":        RiskHigh,
@@ -180,47 +209,56 @@ var commandRiskTable = map[string]RiskLevel{
 	"kubectl":   RiskHigh,
 	"systemctl": RiskHigh,
 	"service":   RiskHigh,
+	"nc":        RiskHigh,
+	"netcat":    RiskHigh,
+	"ncat":      RiskHigh,
+	"socat":     RiskHigh,
+	"useradd":   RiskHigh,
+	"userdel":   RiskHigh,
+	"usermod":   RiskHigh,
+	"passwd":    RiskHigh,
+	"chroot":    RiskHigh,
+	"truncate":  RiskHigh,
+	"shred":     RiskHigh,
 
 	// Critical — privilege escalation, always dangerous
-	"sudo":     RiskCritical,
-	"su":       RiskCritical,
-	"dd":       RiskCritical,
-	"mkfs":     RiskCritical,
-	"fdisk":    RiskCritical,
-	"parted":   RiskCritical,
-	"mount":    RiskCritical,
-	"umount":   RiskCritical,
-	"shutdown": RiskCritical,
-	"reboot":   RiskCritical,
-	"poweroff": RiskCritical,
-	"halt":     RiskCritical,
-	"init":     RiskCritical,
-	"insmod":   RiskCritical,
-	"rmmod":    RiskCritical,
-	"modprobe": RiskCritical,
-	"iptables": RiskCritical,
-	"nft":      RiskCritical,
-	"eval":     RiskCritical,
-	"exec":     RiskCritical,
-	"source":   RiskCritical,
-	".":        RiskCritical,
-	"format":   RiskCritical,
-	"diskpart": RiskCritical,
+	"sudo":      RiskCritical,
+	"su":        RiskCritical,
+	"dd":        RiskCritical,
+	"mkfs":      RiskCritical,
+	"fdisk":     RiskCritical,
+	"parted":    RiskCritical,
+	"mount":     RiskCritical,
+	"umount":    RiskCritical,
+	"shutdown":  RiskCritical,
+	"reboot":    RiskCritical,
+	"poweroff":  RiskCritical,
+	"halt":      RiskCritical,
+	"init":      RiskCritical,
+	"insmod":    RiskCritical,
+	"rmmod":     RiskCritical,
+	"modprobe":  RiskCritical,
+	"iptables":  RiskCritical,
+	"ip6tables": RiskCritical,
+	"nft":       RiskCritical,
+	"chattr":    RiskCritical,
+	"visudo":    RiskCritical,
+	"eval":      RiskCritical,
+	"exec":      RiskCritical,
+	"source":    RiskCritical,
+	".":         RiskCritical,
 
 	// Critical — shell wrappers can execute arbitrary nested commands,
 	// bypassing the risk classifier entirely (e.g. sh -c 'rm -rf /').
-	"sh":         RiskCritical,
-	"bash":       RiskCritical,
-	"zsh":        RiskCritical,
-	"dash":       RiskCritical,
-	"fish":       RiskCritical,
-	"csh":        RiskCritical,
-	"tcsh":       RiskCritical,
-	"ksh":        RiskCritical,
-	"powershell": RiskCritical,
-	"pwsh":       RiskCritical,
-	"cmd":        RiskCritical,
-	"cmd.exe":    RiskCritical,
+	"sh":   RiskCritical,
+	"bash": RiskCritical,
+	"zsh":  RiskCritical,
+	"dash": RiskCritical,
+	"fish": RiskCritical,
+	"csh":  RiskCritical,
+	"tcsh": RiskCritical,
+	"ksh":  RiskCritical,
+	"pwsh": RiskCritical, // PowerShell Core 7+ (cross-platform)
 }
 
 // ArgModifier describes a condition that elevates a command's risk level.
@@ -274,6 +312,7 @@ var argumentModifiers = map[string][]ArgModifier{
 		{Args: []string{"install", "--user"}, Level: RiskHigh},
 	},
 	"docker": {
+		{Args: []string{"run", "--privileged"}, Level: RiskCritical},
 		{Args: []string{"run"}, Level: RiskHigh},
 		{Args: []string{"exec"}, Level: RiskHigh},
 		{Args: []string{"rm"}, Level: RiskHigh},
@@ -304,6 +343,26 @@ var argumentModifiers = map[string][]ArgModifier{
 		{Args: []string{"-9"}, Level: RiskCritical},
 		{Args: []string{"-KILL"}, Level: RiskCritical},
 		{Args: []string{"-SIGKILL"}, Level: RiskCritical},
+	},
+	"find": {
+		{Args: []string{"-delete"}, Level: RiskHigh},
+		{Args: []string{"-exec"}, Level: RiskHigh},
+	},
+	"sed": {
+		{Args: []string{"-i"}, Level: RiskMedium},
+	},
+	"rsync": {
+		{Args: []string{"--delete"}, Level: RiskCritical},
+	},
+	"crontab": {
+		{Args: []string{"-r"}, Level: RiskHigh},
+	},
+	"ssh": {
+		{Args: []string{"-R"}, Level: RiskHigh},
+		{Args: []string{"-L"}, Level: RiskHigh},
+	},
+	"tar": {
+		{Args: []string{"--to-command"}, Level: RiskCritical},
 	},
 }
 
@@ -413,19 +472,38 @@ func BlockedCommandError(args []string, level, threshold RiskLevel, reason strin
 }
 
 // baseCommand extracts the basename from a command path.
-// Uses filepath.Base so both forward slashes and Windows backslashes
-// are handled correctly.
+// On Windows, it additionally lowercases the name and strips known
+// executable extensions (.exe, .cmd, .bat, .com) so that
+// "C:\Windows\System32\cmd.exe" resolves to "cmd" in the risk table.
+//
+// On Unix these transformations are NOT applied: commands are
+// case-sensitive and extensions are part of the filename. Stripping
+// them would let an attacker disguise a binary as a known-safe command
+// (e.g., a malicious "ls.exe" classified as low-risk "ls").
 func baseCommand(cmd string) string {
-	return filepath.Base(cmd)
+	name := filepath.Base(cmd)
+	if runtime.GOOS != "windows" {
+		return name
+	}
+	lower := strings.ToLower(name)
+	for _, ext := range []string{".exe", ".cmd", ".bat", ".com"} {
+		if strings.HasSuffix(lower, ext) {
+			return lower[:len(lower)-len(ext)]
+		}
+	}
+	return lower
 }
 
 // normalizeFlags expands combined short flags (e.g., "-rf" → "-r", "-f")
 // so that modifier matching works regardless of how flags are grouped.
-// Long flags (--flag) and non-flag arguments are passed through unchanged.
+// Long flags (--flag), non-flag arguments, and slash flags (/s, /MIR) are
+// passed through unchanged. Single-dash flags longer than 3 characters
+// (e.g., "-urlcache") are treated as long flags and NOT expanded, since
+// no standard tool uses 4+ combined single-letter flags.
 func normalizeFlags(args []string) []string {
 	result := make([]string, 0, len(args)*2)
 	for _, a := range args {
-		if len(a) > 2 && a[0] == '-' && a[1] != '-' {
+		if len(a) > 2 && len(a) <= 4 && a[0] == '-' && a[1] != '-' {
 			for _, ch := range a[1:] {
 				result = append(result, "-"+string(ch))
 			}

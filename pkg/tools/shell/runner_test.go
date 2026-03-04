@@ -4,9 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
+
+	"mvdan.cc/sh/v3/expand"
 )
 
 func TestRun_Success(t *testing.T) {
@@ -239,5 +242,87 @@ func TestRun_RiskOverrides(t *testing.T) {
 	// (file doesn't exist) but it should not be _blocked_.
 	if result.IsError && strings.Contains(result.Output, "blocked") {
 		t.Errorf("rm should be allowed with override: %s", result.Output)
+	}
+}
+
+// --- lookPath unit tests ---
+
+func makeTestEnv(vars map[string]string) expand.Environ {
+	return &sanitizedEnv{vars: vars}
+}
+
+func TestLookPath_PathContainsSlash(t *testing.T) {
+	env := makeTestEnv(map[string]string{"PATH": "/usr/bin"})
+
+	// Forward-slash path → returned as-is, no PATH search.
+	got, err := lookPath(env, "/usr/bin/git")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "/usr/bin/git" {
+		t.Errorf("got %q, want /usr/bin/git", got)
+	}
+
+	// Relative path with slash → also returned as-is.
+	got, err = lookPath(env, "./script.sh")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != "./script.sh" {
+		t.Errorf("got %q, want ./script.sh", got)
+	}
+}
+
+func TestLookPath_FindsExecutableInPATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable-bit test")
+	}
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "mytool")
+	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	env := makeTestEnv(map[string]string{"PATH": dir})
+	got, err := lookPath(env, "mytool")
+	if err != nil {
+		t.Fatalf("expected to find mytool: %v", err)
+	}
+	if got != binPath {
+		t.Errorf("got %q, want %q", got, binPath)
+	}
+}
+
+func TestLookPath_SkipsNonExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable-bit test")
+	}
+	dir := t.TempDir()
+	// Create a file without executable bit.
+	binPath := filepath.Join(dir, "noexec")
+	if err := os.WriteFile(binPath, []byte("data"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	env := makeTestEnv(map[string]string{"PATH": dir})
+	_, err := lookPath(env, "noexec")
+	if err == nil {
+		t.Error("expected error for non-executable file")
+	}
+}
+
+func TestLookPath_PATHNotSet(t *testing.T) {
+	env := makeTestEnv(map[string]string{})
+	_, err := lookPath(env, "ls")
+	if err == nil {
+		t.Error("expected error when PATH is not set")
+	}
+}
+
+func TestLookPath_PATHEmpty(t *testing.T) {
+	env := makeTestEnv(map[string]string{"PATH": ""})
+	_, err := lookPath(env, "ls")
+	if err == nil {
+		t.Error("expected error when PATH is empty")
 	}
 }

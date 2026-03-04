@@ -2,6 +2,7 @@ package shell
 
 import (
 	"os"
+	"runtime"
 	"strings"
 
 	"mvdan.cc/sh/v3/expand"
@@ -33,15 +34,34 @@ var defaultEnvAllowPrefixes = []string{
 	"LC_",
 }
 
+// windowsEnvAllowlist contains additional variables needed on Windows.
+// Without SYSTEMROOT, many Windows system calls fail. PATHEXT is required
+// for correct executable lookup.
+var windowsEnvAllowlist = map[string]bool{
+	"PATHEXT":     true,
+	"SYSTEMROOT":  true,
+	"SYSTEMDRIVE": true,
+	"COMSPEC":     true,
+	"APPDATA":     true,
+	"USERPROFILE": true,
+	"HOMEDRIVE":   true,
+	"HOMEPATH":    true,
+}
+
 // BuildSanitizedEnv constructs an expand.Environ from the current process
 // environment, filtering to only allowlisted variables.
 //
 // extraAllowlist adds additional variable names to the default allowlist.
 // envSet provides explicit key=value pairs that override any inherited value.
 func BuildSanitizedEnv(extraAllowlist []string, envSet map[string]string) expand.Environ {
-	allowed := make(map[string]bool, len(DefaultEnvAllowlist)+len(extraAllowlist))
+	allowed := make(map[string]bool, len(DefaultEnvAllowlist)+len(extraAllowlist)+len(windowsEnvAllowlist))
 	for k := range DefaultEnvAllowlist {
 		allowed[k] = true
+	}
+	if runtime.GOOS == "windows" {
+		for k := range windowsEnvAllowlist {
+			allowed[k] = true
+		}
 	}
 	for _, k := range extraAllowlist {
 		allowed[k] = true
