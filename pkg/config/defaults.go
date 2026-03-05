@@ -382,6 +382,9 @@ func DefaultConfig() *Config {
 				ExecTimeoutMinutes: 5,
 			},
 			Exec: ExecConfig{
+				ToolConfig: ToolConfig{
+					Enabled: true,
+				},
 				RiskThreshold: "medium",
 			},
 			Skills: SkillsToolsConfig{
