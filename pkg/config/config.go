@@ -609,11 +609,12 @@ type ArgModifierConfig struct {
 }
 
 type ExecConfig struct {
-	RiskThreshold string                         `json:"risk_threshold" env:"PICOCLAW_TOOLS_EXEC_RISK_THRESHOLD"` // "low"|"medium"|"high"|"critical"; default "medium"
-	RiskOverrides map[string]string              `json:"risk_overrides" env:"PICOCLAW_TOOLS_EXEC_RISK_OVERRIDES"` // command → level override
-	ArgModifiers  map[string][]ArgModifierConfig `json:"arg_modifiers"  env:"PICOCLAW_TOOLS_EXEC_ARG_MODIFIERS"`  // command → argument-aware risk adjustments (extends built-ins)
-	EnvAllowlist  []string                       `json:"env_allowlist"  env:"PICOCLAW_TOOLS_EXEC_ENV_ALLOWLIST"`  // extra env vars to pass (extends defaults)
-	EnvSet        map[string]string              `json:"env_set"        env:"PICOCLAW_TOOLS_EXEC_ENV_SET"`        // explicit var=value pairs
+	ToolConfig    `                               envPrefix:"PICOCLAW_TOOLS_EXEC_"`
+	RiskThreshold string                         `                                 json:"risk_threshold" env:"PICOCLAW_TOOLS_EXEC_RISK_THRESHOLD"` // "low"|"medium"|"high"|"critical"; default "medium"
+	RiskOverrides map[string]string              `                                 json:"risk_overrides" env:"PICOCLAW_TOOLS_EXEC_RISK_OVERRIDES"` // command → level override
+	ArgModifiers  map[string][]ArgModifierConfig `                                 json:"arg_modifiers"  env:"PICOCLAW_TOOLS_EXEC_ARG_MODIFIERS"`  // command → argument-aware risk adjustments (extends built-ins)
+	EnvAllowlist  []string                       `                                 json:"env_allowlist"  env:"PICOCLAW_TOOLS_EXEC_ENV_ALLOWLIST"`  // extra env vars to pass (extends defaults)
+	EnvSet        map[string]string              `                                 json:"env_set"        env:"PICOCLAW_TOOLS_EXEC_ENV_SET"`        // explicit var=value pairs
 
 	// Deprecated: these fields are ignored. See risk_threshold and risk_overrides.
 	EnableDenyPatterns *bool `json:"enable_deny_patterns,omitempty" env:"PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS"`

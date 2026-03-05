@@ -6,22 +6,25 @@ import (
 	"os"
 	"time"
 
+	"github.com/sipeed/picoclaw/pkg/bus"
 	"github.com/sipeed/picoclaw/pkg/config"
 	"github.com/sipeed/picoclaw/pkg/tools/shell"
+	"github.com/sipeed/picoclaw/pkg/utils"
 )
 
 // Compile-time interface checks.
 var (
-	_ Tool      = (*ExecTool)(nil)
-	_ AsyncTool = (*ExecTool)(nil)
+	_ Tool          = (*ExecTool)(nil)
+	_ AsyncExecutor = (*ExecTool)(nil)
 )
 
 // ExecTool executes shell commands using an in-process interpreter
 // with AST-based risk classification, env sanitization, and file-access sandboxing.
 //
-// ExecTool implements AsyncTool. When the LLM passes background=true the
-// command runs in a goroutine and the result is delivered via the callback
-// injected by the tool registry.
+// ExecTool implements AsyncExecutor. When the LLM passes background=true,
+// the command runs in a goroutine and the result is delivered via
+// bus.PublishInbound (re-entering the agent loop). Without a bus,
+// background=true falls back to synchronous execution.
 type ExecTool struct {
 	workingDir          string
 	timeout             time.Duration
@@ -33,19 +36,25 @@ type ExecTool struct {
 	envAllowlist  []string
 	envSet        map[string]string
 
-	callback AsyncCallback
+	bus *bus.MessageBus
 }
 
 func NewExecTool(workingDir string, restrict bool) (*ExecTool, error) {
-	return NewExecToolWithConfig(workingDir, restrict, nil)
+	return NewExecToolWithConfig(workingDir, restrict, nil, nil)
 }
 
-func NewExecToolWithConfig(workingDir string, restrict bool, cfg *config.Config) (*ExecTool, error) {
+func NewExecToolWithConfig(
+	workingDir string,
+	restrict bool,
+	cfg *config.Config,
+	msgBus *bus.MessageBus,
+) (*ExecTool, error) {
 	t := &ExecTool{
 		workingDir:          workingDir,
 		timeout:             60 * time.Second,
 		restrictToWorkspace: restrict,
 		riskThreshold:       shell.RiskMedium,
+		bus:                 msgBus,
 	}
 
 	if cfg != nil {
@@ -101,11 +110,6 @@ func (t *ExecTool) Description() string {
 	return "Execute a shell command and return its output. Use with caution."
 }
 
-// SetCallback implements AsyncTool.
-func (t *ExecTool) SetCallback(cb AsyncCallback) {
-	t.callback = cb
-}
-
 func (t *ExecTool) Parameters() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -128,9 +132,66 @@ func (t *ExecTool) Parameters() map[string]any {
 }
 
 func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult {
+	cfg, err := t.buildConfig(args)
+	if err != nil {
+		return err
+	}
+
+	result := shell.Run(ctx, cfg)
+	return &ToolResult{
+		ForLLM:  result.Output,
+		ForUser: result.Output,
+		IsError: result.IsError,
+	}
+}
+
+// ExecuteAsync implements AsyncExecutor. The registry calls this for
+// parallel tool dispatch. When background=true and a bus is configured,
+// the command runs in a goroutine and the result is delivered via
+// bus.PublishInbound (re-entering the agent loop). Without a bus,
+// background=true falls back to synchronous execution.
+func (t *ExecTool) ExecuteAsync(ctx context.Context, args map[string]any, cb AsyncCallback) *ToolResult {
+	background, _ := args["background"].(bool)
+	if !background || t.bus == nil {
+		return t.Execute(ctx, args)
+	}
+
+	cfg, errResult := t.buildConfig(args)
+	if errResult != nil {
+		return errResult
+	}
+
+	channel := ToolChannel(ctx)
+	chatID := ToolChatID(ctx)
+
+	go func() {
+		result := shell.Run(ctx, cfg)
+
+		content := fmt.Sprintf("Background command completed: `%s`\n\n%s",
+			utils.Truncate(cfg.Command, 100), result.Output)
+		if result.IsError {
+			content = fmt.Sprintf("Background command failed: `%s`\n\n%s",
+				utils.Truncate(cfg.Command, 100), result.Output)
+		}
+
+		pubCtx, pubCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer pubCancel()
+		_ = t.bus.PublishInbound(pubCtx, bus.InboundMessage{
+			Channel:  "system",
+			SenderID: fmt.Sprintf("exec:%s", utils.Truncate(cfg.Command, 50)),
+			ChatID:   fmt.Sprintf("%s:%s", channel, chatID),
+			Content:  content,
+		})
+	}()
+	return AsyncResult(fmt.Sprintf("Running `%s` in background", utils.Truncate(cfg.Command, 100)))
+}
+
+// buildConfig extracts args and returns a RunConfig. Returns a *ToolResult
+// error if validation fails (bad command, sandbox violation, etc.).
+func (t *ExecTool) buildConfig(args map[string]any) (shell.RunConfig, *ToolResult) {
 	command, ok := args["command"].(string)
 	if !ok {
-		return ErrorResult("command is required")
+		return shell.RunConfig{}, ErrorResult("command is required")
 	}
 
 	cwd := t.workingDir
@@ -138,7 +199,7 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 		if t.restrictToWorkspace && t.workingDir != "" {
 			resolvedWD, err := validatePath(wd, t.workingDir, true)
 			if err != nil {
-				return ErrorResult("Command blocked by safety guard (" + err.Error() + ")")
+				return shell.RunConfig{}, ErrorResult("Command blocked by safety guard (" + err.Error() + ")")
 			}
 			cwd = resolvedWD
 		} else {
@@ -153,7 +214,7 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 		}
 	}
 
-	cfg := shell.RunConfig{
+	return shell.RunConfig{
 		Command:           command,
 		Dir:               cwd,
 		Timeout:           t.timeout,
@@ -164,35 +225,7 @@ func (t *ExecTool) Execute(ctx context.Context, args map[string]any) *ToolResult
 		ExtraArgModifiers: t.argModifiers,
 		EnvAllowlist:      t.envAllowlist,
 		EnvSet:            t.envSet,
-	}
-
-	background, _ := args["background"].(bool)
-	if background && t.callback != nil {
-		return t.executeAsync(ctx, cfg)
-	}
-
-	result := shell.Run(ctx, cfg)
-	return &ToolResult{
-		ForLLM:  result.Output,
-		ForUser: result.Output,
-		IsError: result.IsError,
-	}
-}
-
-// executeAsync launches the command in a goroutine and delivers the result
-// through the AsyncCallback. The parent ctx is used for cancellation so the
-// goroutine respects agent shutdown.
-func (t *ExecTool) executeAsync(ctx context.Context, cfg shell.RunConfig) *ToolResult {
-	cb := t.callback // capture before goroutine
-	go func() {
-		result := shell.Run(ctx, cfg)
-		cb(ctx, &ToolResult{
-			ForLLM:  result.Output,
-			ForUser: result.Output,
-			IsError: result.IsError,
-		})
-	}()
-	return AsyncResult(fmt.Sprintf("Running `%s` in background", cfg.Command))
+	}, nil
 }
 
 func (t *ExecTool) SetTimeout(timeout time.Duration) {

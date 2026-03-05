@@ -140,15 +140,15 @@
 
 12. The cron tool (`pkg/tools/cron.go`) MUST use the same `ExecTool` with the same guard system.
 
-13. The `ExecTool` MUST implement the `AsyncTool` interface (`SetCallback(AsyncCallback)`). When the LLM passes `background=true` and a callback is registered, the command MUST be launched in a goroutine; the result is delivered via the callback. When `background=true` but no callback is registered, execution falls through to synchronous mode. Compile-time interface check: `var _ AsyncTool = (*ExecTool)(nil)`.
+13. The `ExecTool` MUST implement the `AsyncExecutor` interface (`ExecuteAsync(ctx, args, cb)`). When the LLM passes `background=true` and a `bus.MessageBus` was injected at construction, the command MUST be launched in a goroutine; the result is delivered via `bus.PublishInbound` with `Channel: "system"`, `SenderID: "exec:<cmd>"`, `ChatID: "<channel>:<chatID>"`. When `background=true` but no bus is available (e.g. cron-created instances), execution falls through to synchronous mode. Compile-time interface check: `var _ AsyncExecutor = (*ExecTool)(nil)`.
 
-14. The implementation MUST use a subpackage structure: `pkg/tools/shell/` contains the core logic (risk classifier, env sanitizer, sandbox, runner) and `pkg/tools/shell_tool.go` is the thin adapter implementing the `Tool` + `AsyncTool` interfaces. Tests live alongside their source in both locations.
+14. The implementation MUST use a subpackage structure: `pkg/tools/shell/` contains the core logic (risk classifier, env sanitizer, sandbox, runner) and `pkg/tools/shell_tool.go` is the thin adapter implementing the `Tool` + `AsyncExecutor` interfaces. Tests live alongside their source in both locations.
 
 ### 2.3 Migration
 
 - **Config**: Old fields are silently ignored with a logged warning. No config version bump required. Add a migration note to `docs/tools_configuration.md`.
 - **Behavioral**: Commands that previously passed regex checks but are genuinely dangerous (variable indirection bypasses) will now be blocked. This is intentional and constitutes the security fix.
-- **Backward compatibility**: The `Tool` interface (`Name`, `Description`, `Parameters`, `Execute`) is unchanged. Callers (`ToolRegistry`, `RunToolLoop`, agent instance) require no changes.
+- **Backward compatibility**: The `Tool` interface (`Name`, `Description`, `Parameters`, `Execute`) is unchanged. `ExecTool` construction moved from `NewAgentInstance` to `registerSharedTools` (in `loop.go`) where the message bus is available for constructor injection.
 
 ---
 
@@ -205,7 +205,7 @@
 
 | Who / what                                                    | Impact                                                                                                         |
 | ------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `pkg/tools/shell_tool.go`                                     | Thin adapter: `ExecTool` struct implementing `Tool` + `AsyncTool`. Delegates to `pkg/tools/shell/` subpackage. |
+| `pkg/tools/shell_tool.go`                                     | Thin adapter: `ExecTool` struct implementing `Tool` + `AsyncExecutor`. Delegates to `pkg/tools/shell/` subpackage. Bus-injected for background result delivery. |
 | `pkg/tools/shell_tool_test.go`                                | Tests for `ExecTool` sync/async behavior and interface compliance.                                             |
 | `pkg/tools/shell_process_unix.go`, `shell_process_windows.go` | Removed. Interpreter manages process lifecycle.                                                                |
 | `pkg/config/config.go` (`ExecConfig`)                         | Three fields removed, four fields added.                                                                       |
@@ -229,7 +229,7 @@
 | `pkg/tools/shell/sandbox_test.go` | Redirect inside/outside workspace, symlink escape, safe-path exemption.                                                                    |
 | `pkg/tools/shell/runner.go`       | `Run` function: parser + interpreter + `ExecHandlers` middleware integration.                                                              |
 | `pkg/tools/shell/runner_test.go`  | End-to-end runner tests: timeout, working dir, env sanitization, pipelines.                                                                |
-| `pkg/tools/shell_tool.go`         | Adapter: `ExecTool` struct, `NewExecToolWithConfig`, `AsyncTool` impl, arg modifier wiring.                                                |
+| `pkg/tools/shell_tool.go`         | Adapter: `ExecTool` struct, `NewExecToolWithConfig(workDir, restrict, cfg, bus)`, `AsyncExecutor` impl, arg modifier wiring.               |
 | `pkg/tools/shell_tool_test.go`    | `ExecTool` sync/async tests, interface compliance checks.                                                                                  |
 | `pkg/tools/cron_exec_test.go`     | AC-8: cron-originated `ExecTool` blocks dangerous commands identically to agent-created one; safe commands pass.                            |
 
@@ -243,7 +243,7 @@
 | 4   | Rewrite shell tool: parser + interpreter + middleware (`shell/runner.go` + `shell_tool.go`) | Maintainer      | 5, 6   | **Done** |
 | 5   | Port all existing test cases + add bypass tests                                             | Maintainer      | 7      | **Done** |
 | 6   | Update `ExecConfig`, defaults, migration warning                                            | Maintainer      | 7      | **Done** |
-| 7   | Implement `AsyncTool` on `ExecTool`                                                         | Maintainer      | —      | **Done** |
+| 7   | Implement `AsyncExecutor` on `ExecTool` (bus-based background delivery)                     | Maintainer      | —      | **Done** |
 | 8   | Implement configurable `ArgModifiers` (user-defined, highest-match-wins)                    | Maintainer      | —      | **Done** |
 | 9   | Fix runner_test PATH resolution for external binaries in sandboxed interpreter              | Maintainer      | —      | **Done** |
 | 10  | Update cron tool, docs, config example                                                      | Maintainer      | —      | **Done** |
@@ -266,7 +266,7 @@
 ### Rollback plan
 
 - The change is contained within `pkg/tools/` and `pkg/config/`. Git revert of the implementation commits restores the regex-based system.
-- Assumption: no other packages depend on `ExecTool` internals (only the `Tool` interface is public contract). Verified: only `pkg/agent/instance.go` and `pkg/tools/cron.go` call `NewExecToolWithConfig`.
+- Assumption: no other packages depend on `ExecTool` internals (only the `Tool` interface is public contract). Verified: only `pkg/agent/loop.go` (via `registerSharedTools`) and `pkg/tools/cron.go` call `NewExecToolWithConfig`.
 - If the interpreter causes widespread command failures post-deploy, revert and reconsider the hybrid approach (Alternative #4).
 
 ### Decision review date

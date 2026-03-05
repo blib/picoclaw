@@ -128,9 +128,30 @@ When `restrict_to_workspace` is enabled (the default), the interpreter's
 
 ### Cron Integration
 
-The cron tool creates its own `ExecTool` via `NewExecToolWithConfig`, so
-scheduled commands go through the same risk classifier, env sanitization, and
-sandbox as agent-originated commands.
+The cron tool creates its own `ExecTool` via `NewExecToolWithConfig` (with `nil`
+bus), so scheduled commands go through the same risk classifier, env
+sanitization, and sandbox as agent-originated commands. Because there is no bus,
+cron-executed commands always run synchronously regardless of the `background`
+parameter.
+
+### Background Execution
+
+When the LLM passes `background: true`, the exec tool launches the command in a
+goroutine and immediately returns a confirmation to the agent. The result is
+delivered asynchronously via `bus.PublishInbound` as a system-channel inbound
+message:
+
+| Field      | Value                                  |
+| ---------- | -------------------------------------- |
+| `Channel`  | `"system"`                             |
+| `SenderID` | `"exec:<command>"`                     |
+| `ChatID`   | `"<originChannel>:<originChatID>"`     |
+| `Content`  | stdout/stderr output (or error string) |
+
+This is the same delivery mechanism used by `SpawnTool` for subagent results.
+
+If no message bus is available (e.g. cron-created instances), `background: true`
+falls through to synchronous execution.
 
 ### Configuration Example
 
@@ -281,7 +302,7 @@ All configuration options can be overridden via environment variables with the f
 For example:
 
 - `PICOCLAW_TOOLS_WEB_BRAVE_ENABLED=true`
-- `PICOCLAW_TOOLS_EXEC_ENABLE_DENY_PATTERNS=false`
+- `PICOCLAW_TOOLS_EXEC_RISK_THRESHOLD=high`
 - `PICOCLAW_TOOLS_CRON_EXEC_TIMEOUT_MINUTES=10`
 - `PICOCLAW_TOOLS_MCP_ENABLED=true`
 
