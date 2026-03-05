@@ -170,6 +170,7 @@ func (t *ExecTool) ExecuteAsync(ctx context.Context, args map[string]any, cb Asy
 		if cb != nil {
 			cb(context.Background(), &ToolResult{
 				ForLLM:  content,
+				ForUser: content,
 				IsError: result.IsError,
 			})
 		}
