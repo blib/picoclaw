@@ -195,7 +195,7 @@ func TestClassifyCommand_FullPath(t *testing.T) {
 	}
 }
 
-func TestClassifyCommand_BackslashPath(t *testing.T) {
+func TestClassifyCommand_DeepPath(t *testing.T) {
 	// Forward-slash paths at various depths.
 	got := ClassifyCommand([]string{"/usr/sbin/shutdown", "-h"}, nil)
 	if got != RiskCritical {
