@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
