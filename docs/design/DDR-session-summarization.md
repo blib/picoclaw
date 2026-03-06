@@ -47,9 +47,9 @@ Session context grows without bound during long conversations. The original impl
    | `DefaultKeepLastMessages` | `4` | `KeepLastMessages` |
    | `DefaultContextWindow` | `8192` | `ContextWindow` |
    | `DefaultSummaryMaxTokens` | `1024` | `SummaryMaxTokens` |
-   | `DefaultSummaryTemperature` | `0.3` | `SummaryTemperature` |
+   | `DefaultSummarizationTemperature` | `0.3` | `SummaryTemperature` |
    | `DefaultMultiPartBatchThreshold` | `10` | `MultiPartBatchThreshold` |
-   | `DefaultTimeout` | `120s` | `Timeout` |
+   | `DefaultSummarizationTimeout` | `120s` | `Timeout` |
    | `DefaultMaxSingleMsgTokenRatio` | `0.5` | `MaxSingleMsgTokenRatio` |
    | `DefaultForceCompressionMinMsgs` | `4` | `ForceCompressionMinMessages` |
    | `DefaultCharsPerToken` | `2.5` | `CharsPerToken` |
