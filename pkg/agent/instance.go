@@ -27,7 +27,6 @@ type AgentInstance struct {
 	MaxTokens      int
 	Temperature    float64
 	ThinkingLevel  ThinkingLevel
-	ContextWindow  int
 	Provider       providers.LLMProvider
 	Sessions       *session.SessionManager
 	ContextBuilder *ContextBuilder
