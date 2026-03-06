@@ -513,7 +513,7 @@ func (sm *SessionManager) summarizeSession(sessionKey string) {
 // already blocked, so there is no concurrent-append concern here.
 // No-op if no Summarizer was provided via WithSummarizer.
 func (sm *SessionManager) ForceCompression(sessionKey string) {
-	cfg := sm.summarizerCfg
+	cfg := sm.summarizerCfg.WithDefaults()
 	history := sm.GetHistory(sessionKey)
 	if len(history) <= cfg.ForceCompressionMinMessages {
 		return

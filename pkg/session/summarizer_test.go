@@ -231,6 +231,23 @@ func TestForceCompression_TooFewMessages(t *testing.T) {
 	}
 }
 
+func TestForceCompression_WithoutSummarizer_UsesDefaultMinMessages(t *testing.T) {
+	sm := NewSessionManager(t.TempDir())
+
+	// 3 messages is below the default ForceCompressionMinMessages (4),
+	// so compression should not run even when no summarizer is configured.
+	sm.AddFullMessage("test", providers.Message{Role: "system", Content: "system prompt"})
+	sm.AddMessage("test", "user", "one")
+	sm.AddMessage("test", "assistant", "two")
+
+	sm.ForceCompression("test")
+
+	history := sm.GetHistory("test")
+	if len(history) != 3 {
+		t.Errorf("expected 3 messages unchanged, got %d", len(history))
+	}
+}
+
 // --- ApplySummarization ---
 
 func TestApplySummarization_PreservesNewMessages(t *testing.T) {
